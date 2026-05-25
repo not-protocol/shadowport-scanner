@@ -6,6 +6,13 @@ A Python-based command-line tool that automates network port scanning using Nmap
 
 ---
 
+## Live Demo
+
+![ShadowPort Demo](assets/demo.gif)
+
+
+---
+
 ## Features
 
 - 5 scan modes: Quick, Full TCP, Service Detection, OS Detection, Aggressive
