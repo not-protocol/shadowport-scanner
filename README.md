@@ -5,12 +5,9 @@ A Python-based command-line tool that automates network port scanning using Nmap
 > ⚠️ **ETHICAL USE ONLY** — Use exclusively on systems you own or have written authorization to test.
 
 ---
-<h2 align="center">Live Demo</h2>
+## Video Demo
 
-<p align="center">
-  <img src="assets/demo.gif" width="900" alt="ShadowPort Scanner Demo">
-</p>
-
+[Watch ShadowPort Demo](https://streamable.com/t75fwr)
 
 ---
 
