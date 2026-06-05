@@ -1,6 +1,7 @@
 """
-database.py — ShadowPort Scanner v1.3.0
+database.py — ShadowPort Scanner v2.0.0
 SQLite-backed scan history: store, retrieve, and compare scans.
+All DB operations wrapped in try/except — never crashes the app.
 """
 
 import sqlite3
@@ -9,9 +10,6 @@ import os
 from datetime import datetime
 
 from config.settings import DB_PATH, LOGS_DIR
-
-
-# ─── Schema ───────────────────────────────────────────────────────────────────
 
 CREATE_SCANS = """
 CREATE TABLE IF NOT EXISTS scans (
@@ -28,12 +26,11 @@ CREATE TABLE IF NOT EXISTS scans (
     os_match      TEXT    DEFAULT '',
     ports_json    TEXT    DEFAULT '[]',
     report_path   TEXT    DEFAULT '',
+    partial       INTEGER DEFAULT 0,
     created_at    TEXT    DEFAULT (datetime('now'))
 );
 """
 
-
-# ─── Connection helper ────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
     os.makedirs(LOGS_DIR, exist_ok=True)
@@ -44,23 +41,18 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
-
 def save_scan(scan_data: dict, report_path: str = "", risk_score: int = 0) -> int:
-    """
-    Insert a completed scan into the database.
-    Returns the new row id.
-    """
     ports      = scan_data.get("ports", [])
     open_count = sum(1 for p in ports if p["state"] == "open")
     os_match   = scan_data.get("os_matches", [""])[0] if scan_data.get("os_matches") else ""
+    partial    = 1 if scan_data.get("partial", False) else 0
 
     conn = _get_conn()
     cur  = conn.execute(
         """INSERT INTO scans
            (target, hostname, status, mode_name, start_time, end_time,
-            duration_s, open_count, risk_score, os_match, ports_json, report_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            duration_s, open_count, risk_score, os_match, ports_json, report_path, partial)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             scan_data.get("host", ""),
             scan_data.get("hostname", ""),
@@ -74,6 +66,7 @@ def save_scan(scan_data: dict, report_path: str = "", risk_score: int = 0) -> in
             os_match,
             json.dumps(ports),
             report_path,
+            partial,
         ),
     )
     conn.commit()
@@ -83,7 +76,6 @@ def save_scan(scan_data: dict, report_path: str = "", risk_score: int = 0) -> in
 
 
 def get_history(limit: int = 20) -> list[dict]:
-    """Return the most recent `limit` scans as dicts (newest first)."""
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM scans ORDER BY id DESC LIMIT ?", (limit,)
@@ -93,7 +85,6 @@ def get_history(limit: int = 20) -> list[dict]:
 
 
 def get_scan_by_id(scan_id: int) -> dict | None:
-    """Fetch a single scan by id."""
     conn = _get_conn()
     row  = conn.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
     conn.close()
@@ -101,7 +92,6 @@ def get_scan_by_id(scan_id: int) -> dict | None:
 
 
 def get_scans_for_target(target: str) -> list[dict]:
-    """Return all scans for a given target IP, oldest first."""
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM scans WHERE target=? ORDER BY id ASC", (target,)
@@ -111,11 +101,6 @@ def get_scans_for_target(target: str) -> list[dict]:
 
 
 def compare_scans(target: str) -> dict | None:
-    """
-    Compare the two most recent scans for `target`.
-    Returns a dict with: previous, current, new_ports, closed_ports.
-    Returns None if fewer than 2 scans exist for the target.
-    """
     scans = get_scans_for_target(target)
     if len(scans) < 2:
         return None
@@ -124,23 +109,22 @@ def compare_scans(target: str) -> dict | None:
     curr = scans[-1]
 
     prev_ports = {p["port"] for p in json.loads(prev["ports_json"]) if p["state"] == "open"}
-    curr_ports = {p["port"] for p in json.loads(curr["ports_json"])  if p["state"] == "open"}
+    curr_ports = {p["port"] for p in json.loads(curr["ports_json"]) if p["state"] == "open"}
 
     return {
-        "previous":    prev,
-        "current":     curr,
-        "new_ports":   sorted(curr_ports - prev_ports),
+        "previous":     prev,
+        "current":      curr,
+        "new_ports":    sorted(curr_ports - prev_ports),
         "closed_ports": sorted(prev_ports - curr_ports),
-        "unchanged":   sorted(curr_ports & prev_ports),
+        "unchanged":    sorted(curr_ports & prev_ports),
     }
 
 
 def get_stats() -> dict:
-    """Return aggregate statistics across all scans."""
-    conn  = _get_conn()
-    total = conn.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
-    targets = conn.execute("SELECT COUNT(DISTINCT target) FROM scans").fetchone()[0]
-    avg_dur = conn.execute("SELECT AVG(duration_s) FROM scans").fetchone()[0] or 0
+    conn     = _get_conn()
+    total    = conn.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
+    targets  = conn.execute("SELECT COUNT(DISTINCT target) FROM scans").fetchone()[0]
+    avg_dur  = conn.execute("SELECT AVG(duration_s) FROM scans").fetchone()[0] or 0
     avg_open = conn.execute("SELECT AVG(open_count) FROM scans").fetchone()[0] or 0
     conn.close()
     return {
