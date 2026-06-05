@@ -1,5 +1,5 @@
 """
-profiles.py — ShadowPort Scanner v1.3.0
+profiles.py — ShadowPort Scanner v2.0.0
 One-click scan profile presets: Fast, Deep, Lab, Stealth.
 """
 
@@ -8,13 +8,8 @@ from output import print_profiles_menu, print_info, print_error, print_warning
 
 
 def select_profile(is_root: bool) -> str | None:
-    """
-    Display the profile menu and return the corresponding scan mode key,
-    or None if the user cancels.
-    """
     print_profiles_menu(PROFILES)
-
-    keys = {k[0]: k for k in PROFILES}   # first letter → full key
+    keys        = {k[0]: k for k in PROFILES}
     prompt_keys = "/".join(k[0] for k in PROFILES) + "/cancel"
 
     while True:
@@ -31,9 +26,9 @@ def select_profile(is_root: bool) -> str | None:
             print_error(f"Invalid choice '{choice}'. Try again.\n")
             continue
 
-        profile   = PROFILES[matched]
-        mode_key  = profile["mode"]
-        mode_cfg  = SCAN_MODES[mode_key]
+        profile  = PROFILES[matched]
+        mode_key = profile["mode"]
+        mode_cfg = SCAN_MODES[mode_key]
 
         if mode_cfg["root"] and not is_root:
             print_warning(

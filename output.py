@@ -1,373 +1,265 @@
 """
-output.py — ShadowPort Scanner v1.3.0
-Terminal UI: banner, menus, progress bar, results table,
-service intelligence panel, risk score display, scan comparison.
+output.py — ShadowPort Scanner v2.0.0
+Terminal UI: banner, menus, results table, progress bar, comparison view.
+
+v2.0.0 changes:
+  - ScanProgress.stop() accepts state= "done" | "timeout" | "cancel" | "error"
+  - Progress bar always terminates — never hangs
+  - Empty scan results shown with helpful message
+  - print_no_ports() helper for empty results
 """
 
 import sys
-import time
 import threading
-from colorama import Fore, Back, Style, init
+import time
 
-from config.settings import VERSION, TOOL_NAME
+from colorama import Fore, Style, init
+
+from config.settings import VERSION, TOOL_NAME, SCAN_MODES, EXIT_OPTION, PROFILES
 
 init(autoreset=True)
 
-# ─── Banner ──────────────────────────────────────────────────────────────────
+# ─── Colour helpers ───────────────────────────────────────────────────────────
 
-BANNER = r"""
-  ███████╗██╗  ██╗ █████╗ ██████╗  ██████╗ ██╗    ██╗██████╗  ██████╗ ██████╗ ████████╗
-  ██╔════╝██║  ██║██╔══██╗██╔══██╗██╔═══██╗██║    ██║██╔══██╗██╔═══██╗██╔══██╗╚══██╔══╝
-  ███████╗███████║███████║██║  ██║██║   ██║██║ █╗ ██║██████╔╝██║   ██║██████╔╝   ██║
-  ╚════██║██╔══██║██╔══██║██║  ██║██║   ██║██║███╗██║██╔═══╝ ██║   ██║██╔══██╗   ██║
-  ███████║██║  ██║██║  ██║██████╔╝╚██████╔╝╚███╔███╔╝██║     ╚██████╔╝██║  ██║   ██║
-  ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝  ╚══╝╚══╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝"""
-
-BANNER_SUB = r"""
-                    ███████╗ ██████╗ █████╗ ███╗   ██╗███╗   ██╗███████╗██████╗
-                    ██╔════╝██╔════╝██╔══██╗████╗  ██║████╗  ██║██╔════╝██╔══██╗
-                    ███████╗██║     ███████║██╔██╗ ██║██╔██╗ ██║█████╗  ██████╔╝
-                    ╚════██║██║     ██╔══██║██║╚██╗██║██║╚██╗██║██╔══╝  ██╔══██╗
-                    ███████║╚██████╗██║  ██║██║ ╚████║██║ ╚████║███████╗██║  ██║
-                    ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝"""
-
+def _c(colour, text):
+    return f"{colour}{text}{Style.RESET_ALL}"
 
 def print_banner():
-    print(Fore.RED + Style.BRIGHT + BANNER)
-    print(Fore.CYAN + BANNER_SUB)
-    print()
-    print(Fore.YELLOW + "  " + "─" * 72)
-    print(Fore.YELLOW + f"  {'Network Reconnaissance & Port Analysis Tool':^72}")
-    print(Fore.YELLOW + f"  {f'v{VERSION}  ·  Use ONLY on authorized systems':^72}")
-    print(Fore.YELLOW + "  " + "─" * 72)
-    print(Style.RESET_ALL)
-
-
-# ─── Status printers ──────────────────────────────────────────────────────────
-
-def print_info(msg: str):
-    print(Fore.CYAN + Style.BRIGHT + "[*] " + Style.RESET_ALL + msg)
-
-def print_success(msg: str):
-    print(Fore.GREEN + Style.BRIGHT + "[+] " + Style.RESET_ALL + msg)
-
-def print_error(msg: str):
-    print(Fore.RED + Style.BRIGHT + "[!] ERROR: " + Style.RESET_ALL + msg)
-
-def print_warning(msg: str):
-    print(Fore.YELLOW + Style.BRIGHT + "[~] " + Style.RESET_ALL + msg)
-
-def print_section(title: str):
-    width = 56
-    print()
-    print(Fore.MAGENTA + Style.BRIGHT + "  ┌" + "─" * width + "┐")
-    pad = (width - len(title) - 2) // 2
-    pad2 = width - len(title) - 2 - pad
-    print(Fore.MAGENTA + Style.BRIGHT + "  │" + " " * pad + f" {title} " + " " * pad2 + "│")
-    print(Fore.MAGENTA + Style.BRIGHT + "  └" + "─" * width + "┘")
+    print(_c(Fore.RED, "─" * 72))
+    print(_c(Fore.CYAN, f"{'Network Reconnaissance & Port Analysis Tool':^72}"))
+    print(_c(Fore.YELLOW, f"{'v' + VERSION + '  ·  Use ONLY on authorized systems':^72}"))
+    print(_c(Fore.RED, "─" * 72))
     print()
 
+def print_info(msg):    print(_c(Fore.CYAN,   f"[*] {msg}"))
+def print_success(msg): print(_c(Fore.GREEN,  f"[+] {msg}"))
+def print_warning(msg): print(_c(Fore.YELLOW, f"[!] {msg}"))
+def print_error(msg):   print(_c(Fore.RED,    f"[ERROR] {msg}"))
 
-# ─── Menus ────────────────────────────────────────────────────────────────────
+# ─── Menu ─────────────────────────────────────────────────────────────────────
 
 def print_menu(is_root: bool = False):
-    print(Fore.CYAN + Style.BRIGHT + "\n  ╔══════════════════════════════════════════════════════════╗")
-    print(Fore.CYAN + Style.BRIGHT +   "  ║           SELECT SCAN MODE  —  ShadowPort v1.3           ║")
-    print(Fore.CYAN + Style.BRIGHT +   "  ╠══════════════════════════════════════════════════════════╣")
-
-    rows = [
-        ("1", "Quick Scan        ", "Top 1000 ports",                 False),
-        ("2", "Full TCP Scan     ", "All 65535 ports",                False),
-        ("3", "Service Detection ", "Versions & banners",             False),
-        ("4", "OS Detection      ", "OS fingerprint   [root]",        True ),
-        ("5", "Aggressive Scan   ", "OS+svc+scripts   [root]",        True ),
-        ("6", "Host Discovery    ", "Ping sweep",                     False),
-        ("7", "Stealth SYN Scan  ", "Silent SYN       [root]",        True ),
-        ("8", "Vuln Scripts      ", "NSE vuln scan",                  False),
-        ("─", None,                 None,                             False),
-        ("p", "Scan Profiles     ", "Fast / Deep / Lab / Stealth",   False),
-        ("c", "Scan Comparison   ", "Compare target over time",       False),
-        ("h", "History           ", "Recent scans from database",     False),
-        ("x", "Run Plugins       ", "DNS, Banner Grab + more",        False),
-        ("9", "Exit              ", "Quit ShadowPort",                False),
-    ]
-
-    for num, label, desc, needs_root in rows:
-        if num == "─":
-            print(Fore.CYAN + "  ║  " + Fore.CYAN + Style.DIM + "  " + "·" * 54 + Fore.CYAN + Style.BRIGHT + "  ║")
-            continue
-        if num == "9":
-            color = Fore.RED
-        elif needs_root and not is_root:
-            color = Fore.YELLOW
-        else:
-            color = Fore.GREEN
-
-        root_tag = Fore.MAGENTA + " ⚡" if needs_root else "   "
-        sudo_tag = Fore.YELLOW + " (needs sudo)" if (needs_root and not is_root) else ""
-
-        print(
-            Fore.CYAN + "  ║  "
-            + color + Style.BRIGHT + f"[{num}]"
-            + Fore.WHITE + f"  {label}"
-            + Fore.YELLOW + f"— {desc}"
-            + root_tag + sudo_tag
-        )
-
-    print(Fore.CYAN + Style.BRIGHT + "  ╚══════════════════════════════════════════════════════════╝\n")
-
-    if not is_root:
-        print(Fore.YELLOW + "  [~] Tip: sudo python main.py to unlock all modes.\n")
-
+    print(_c(Fore.CYAN, "  ┌─ Scan Modes " + "─" * 51 + "┐"))
+    for key, cfg in SCAN_MODES.items():
+        root_tag = _c(Fore.RED, " [root]") if cfg["root"] else ""
+        avail    = "" if (not cfg["root"] or is_root) else _c(Fore.RED, " ✗")
+        print(f"  │  [{key}] {cfg['name']:<22} {cfg['description']:<30}{root_tag}{avail}")
+    print("  │")
+    print(f"  │  [p] Scan Profiles     [c] Compare Scans")
+    print(f"  │  [h] History           [x] Run Plugin")
+    print(f"  │  [{EXIT_OPTION}] Exit")
+    print(_c(Fore.CYAN, "  └" + "─" * 64 + "┘"))
+    print()
 
 def print_profiles_menu(profiles: dict):
-    print(Fore.CYAN + Style.BRIGHT + "\n  ╔══════════════════════════════════════╗")
-    print(Fore.CYAN + Style.BRIGHT +   "  ║        SCAN PROFILES  v1.3           ║")
-    print(Fore.CYAN + Style.BRIGHT +   "  ╠══════════════════════════════════════╣")
+    print(_c(Fore.CYAN, "\n  ┌─ Scan Profiles " + "─" * 48 + "┐"))
     for key, p in profiles.items():
-        print(
-            Fore.CYAN + "  ║  "
-            + Fore.GREEN + Style.BRIGHT + f"[{key[:1]}]"
-            + Fore.WHITE + f"  {p['name']:<18}"
-            + Fore.YELLOW + f"— {p['description']}"
-        )
-    print(Fore.CYAN + Style.BRIGHT + "  ╚══════════════════════════════════════╝\n")
-
+        print(f"  │  [{key[0]}] {p['name']:<20} {p['description']}")
+    print(f"  │  [c] Cancel")
+    print(_c(Fore.CYAN, "  └" + "─" * 64 + "┘\n"))
 
 def print_plugins_menu(registry: dict):
-    if not registry:
-        print_warning("No plugins loaded.")
-        return
-    print(Fore.CYAN + Style.BRIGHT + "\n  ╔══════════════════════════════════════╗")
-    print(Fore.CYAN + Style.BRIGHT +   "  ║          AVAILABLE PLUGINS            ║")
-    print(Fore.CYAN + Style.BRIGHT +   "  ╠══════════════════════════════════════╣")
-    for i, (key, plugin) in enumerate(registry.items(), 1):
-        print(
-            Fore.CYAN + "  ║  "
-            + Fore.GREEN + Style.BRIGHT + f"[{i}]"
-            + Fore.WHITE + f"  {plugin.name:<20}"
-            + Fore.YELLOW + f"— {plugin.description}"
-        )
-    print(Fore.CYAN + Style.BRIGHT + "  ╚══════════════════════════════════════╝\n")
+    print(_c(Fore.CYAN, "\n  ┌─ Available Plugins " + "─" * 44 + "┐"))
+    for i, (name, plugin) in enumerate(registry.items(), 1):
+        print(f"  │  [{i}] {name:<20} {plugin.description}")
+    print(_c(Fore.CYAN, "  └" + "─" * 64 + "┘\n"))
 
+# ─── Progress bar ─────────────────────────────────────────────────────────────
 
-# ─── Animated progress bar ────────────────────────────────────────────────────
+BAR_WIDTH = 20
 
 class ScanProgress:
-    PHASES  = ["Initializing", "Host Discovery", "Port Scanning",
-                "Service Detection", "Parsing Results", "Finalizing"]
-    SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+    """
+    Animated progress bar that always terminates cleanly.
+    States: done | timeout | cancel | error
+    """
 
-    def __init__(self, eta_seconds: int = 30, mode_name: str = "Scanning"):
-        self.eta  = eta_seconds
-        self.mode = mode_name
-        self._stop  = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+    def __init__(self, eta_seconds: int, mode_name: str):
+        self._eta       = max(eta_seconds, 1)
+        self._mode      = mode_name
+        self._stop_evt  = threading.Event()
+        self._state     = "done"
+        self._thread    = threading.Thread(target=self._run, daemon=True)
 
-    def start(self):
-        self._t0 = time.time()
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join()
-        sys.stdout.write("\r" + " " * 90 + "\r")
-        sys.stdout.flush()
-
-    def _fmt(self, s: float) -> str:
-        s = int(s)
-        return f"{s//60:02d}:{s%60:02d}"
+    def _bar(self, pct: float, label: str, colour) -> str:
+        filled  = int(BAR_WIDTH * pct)
+        empty   = BAR_WIDTH - filled
+        bar     = "█" * filled + "░" * empty
+        pct_str = f"{int(pct * 100):>3}%"
+        return _c(colour, f"  [{bar}] {pct_str}  {label}")
 
     def _run(self):
-        bar_w = 28
-        si    = 0
-        while not self._stop.is_set():
-            elapsed  = time.time() - self._t0
-            frac     = min(elapsed / max(self.eta, 1), 0.97)
-            filled   = int(bar_w * frac)
-            bar      = "█" * filled + "░" * (bar_w - filled)
-            pct      = int(frac * 100)
-            ph_idx   = min(int(elapsed / max(self.eta / len(self.PHASES), 1)), len(self.PHASES)-1)
-            phase    = self.PHASES[ph_idx]
-            eta_left = max(self.eta - elapsed, 0)
-            spin     = self.SPINNER[si % len(self.SPINNER)]
-            line = (
-                f"\r  {Fore.CYAN}{spin}{Style.RESET_ALL} "
-                f"{Fore.YELLOW}[{Fore.GREEN}{bar}{Fore.YELLOW}]{Style.RESET_ALL} "
-                f"{Fore.WHITE}{pct:3d}%{Style.RESET_ALL}  "
-                f"{Fore.CYAN}Phase:{Style.RESET_ALL} {phase:<20}"
-                f"{Fore.CYAN}Elapsed:{Style.RESET_ALL} {self._fmt(elapsed)}  "
-                f"{Fore.CYAN}ETA:{Style.RESET_ALL} {self._fmt(eta_left)}"
-            )
-            sys.stdout.write(line)
+        start = time.time()
+        while not self._stop_evt.is_set():
+            elapsed = time.time() - start
+            pct     = min(elapsed / self._eta, 0.97)  # cap at 97% until done
+            line    = self._bar(pct, f"Scanning {self._mode}…", Fore.CYAN)
+            sys.stdout.write(f"\r{line}   ")
             sys.stdout.flush()
-            si += 1
-            time.sleep(0.1)
+            time.sleep(0.25)
 
+    def start(self):
+        self._thread.start()
+
+    def stop(self, state: str = "done"):
+        """
+        state:
+          "done"    → 100%  Scan Complete      (green)
+          "timeout" →  75%  Timeout            (yellow)
+          "cancel"  →  40%  Cancelled by user  (yellow)
+          "error"   →   0%  Scan Failed        (red)
+        """
+        self._stop_evt.set()
+        self._thread.join(timeout=2)
+
+        if state == "done":
+            line = self._bar(1.0, "Scan Complete", Fore.GREEN)
+        elif state == "timeout":
+            line = self._bar(0.75, "Timeout — scan terminated", Fore.YELLOW)
+        elif state == "cancel":
+            line = self._bar(0.40, "Cancelled by user", Fore.YELLOW)
+        else:  # error
+            line = self._bar(0.0, "Scan Failed", Fore.RED)
+
+        sys.stdout.write(f"\r{line}   \n\n")
+        sys.stdout.flush()
 
 # ─── Results table ────────────────────────────────────────────────────────────
 
 def print_results_table(scan_data: dict, show_intel: bool = False):
-    host       = scan_data.get("host", "Unknown")
-    hostname   = scan_data.get("hostname", "")
-    state      = scan_data.get("state", "unknown")
-    ports      = scan_data.get("ports", [])
-    os_matches = scan_data.get("os_matches", [])
-    risk       = scan_data.get("risk", {})
-    mode_name  = scan_data.get("mode_name", "")
+    host     = scan_data.get("host", "N/A")
+    hostname = scan_data.get("hostname", "")
+    state    = scan_data.get("state", "unknown")
+    ports    = scan_data.get("ports", [])
+    os_list  = scan_data.get("os_matches", [])
+    risk     = scan_data.get("risk", {})
+    partial  = scan_data.get("partial", False)
 
-    print_section("SCAN RESULTS")
+    sep  = "═" * 66
+    sep2 = "─" * 66
 
-    print(Fore.CYAN + "  Target    : " + Fore.WHITE + Style.BRIGHT + host)
-    if hostname:
-        print(Fore.CYAN + "  Hostname  : " + Fore.WHITE + hostname)
-    sc = Fore.GREEN if state == "up" else Fore.RED
-    print(Fore.CYAN + "  Status    : " + sc + Style.BRIGHT + state.upper())
-    if mode_name:
-        print(Fore.CYAN + "  Scan Mode : " + Fore.WHITE + mode_name)
-    if scan_data.get("start_time"):
-        print(Fore.CYAN + "  Started   : " + Fore.WHITE + scan_data["start_time"])
-    if scan_data.get("end_time"):
-        print(Fore.CYAN + "  Finished  : " + Fore.WHITE + scan_data["end_time"])
-    if scan_data.get("duration_seconds"):
-        print(Fore.CYAN + "  Duration  : " + Fore.WHITE + f"{scan_data['duration_seconds']:.1f}s")
-    if os_matches:
-        print(Fore.CYAN + "  OS Match  : " + Fore.YELLOW + os_matches[0])
+    print(_c(Fore.RED, f"\n  {sep}"))
+    print(_c(Fore.CYAN, f"  {'SCAN RESULTS':^66}"))
+    print(_c(Fore.RED, f"  {sep}"))
 
-    # ── Risk score ──────────────────────────────────────────────────────────
-    if risk:
+    state_colour = Fore.GREEN if state == "up" else Fore.RED
+    print(f"  Target    : {_c(Fore.WHITE, host)}"
+          + (f"  ({hostname})" if hostname else ""))
+    print(f"  Status    : {_c(state_colour, state.upper())}"
+          + (_c(Fore.YELLOW, "  [PARTIAL — timeout]") if partial else ""))
+    print(f"  Mode      : {scan_data.get('mode_name','N/A')}")
+    print(f"  Duration  : {scan_data.get('duration_seconds',0):.1f}s")
+
+    if os_list:
+        print(f"  OS Match  : {os_list[0]}")
+
+    if risk and risk.get("label") != "N/A":
         score = risk.get("score", 0)
         label = risk.get("label", "")
-        risk_color = (
-            Fore.RED    if score >= 70 else
-            Fore.YELLOW if score >= 40 else
-            Fore.GREEN
-        )
-        print(Fore.CYAN + "  Risk Score: " + risk_color + Style.BRIGHT + f"{score}/100  [{label}]")
+        rc    = Fore.RED if score >= 70 else Fore.YELLOW if score >= 40 else Fore.GREEN
+        print(f"  Risk      : {_c(rc, f'{score}/100  [{label}]')}")
 
-    print()
+    print(f"  {sep2}")
 
     if not ports:
-        print_warning("No ports found.")
+        _print_no_ports()
         return
 
-    # ── Port table ────────────────────────────────────────────────────────────
-    col_p, col_s, col_sv, col_v = 14, 12, 20, 32
-    total_w = col_p + col_s + col_sv + col_v
+    open_ports = [p for p in ports if p["state"] == "open"]
+    if not open_ports and not show_intel:
+        _print_no_ports()
+        return
 
-    print(Fore.WHITE + Style.BRIGHT
-          + "  " + "PORT".ljust(col_p) + "STATE".ljust(col_s)
-          + "SERVICE".ljust(col_sv) + "VERSION")
-    print(Fore.CYAN + "  " + "─" * total_w)
+    col_p, col_s, col_sv, col_v = 14, 12, 20, 18
+    header = (
+        "  "
+        + _c(Fore.CYAN, "PORT".ljust(col_p))
+        + _c(Fore.CYAN, "STATE".ljust(col_s))
+        + _c(Fore.CYAN, "SERVICE".ljust(col_sv))
+        + _c(Fore.CYAN, "VERSION")
+    )
+    print(header)
+    print(f"  {sep2}")
 
     for p in ports:
-        port_str = f"{p['port']}/{p['proto']}".ljust(col_p)
-        s = p["state"]
-        sc = Fore.GREEN if s == "open" else Fore.RED if s == "closed" else Fore.YELLOW
-        print("  "
-              + Fore.WHITE + Style.BRIGHT + port_str
-              + sc + s.ljust(col_s)
-              + Fore.CYAN + p["service"].ljust(col_sv)
-              + Fore.YELLOW + p.get("version", "")[:col_v])
+        sc = (Fore.GREEN if p["state"] == "open"
+              else Fore.RED if p["state"] == "closed"
+              else Fore.YELLOW)
+        port_col = _c(sc, f"{p['port']}/{p['proto']}".ljust(col_p))
+        state_col = _c(sc, p["state"].ljust(col_s))
+        svc_col   = p["service"].ljust(col_sv)
+        ver_col   = p.get("version", "")[:col_v]
+        print(f"  {port_col}{state_col}{svc_col}{ver_col}")
 
-        # Service intelligence (educational mode)
-        if show_intel and s == "open":
-            intel = p.get("intel", {})
-            if intel:
-                print(Fore.CYAN + Style.DIM
-                      + "       ├─ Use : " + Style.RESET_ALL + Fore.WHITE + intel.get("use", ""))
-                print(Fore.RED + Style.DIM
-                      + "       └─ Risk: " + Style.RESET_ALL + Fore.YELLOW + intel.get("risk", ""))
+        if show_intel and p["state"] == "open":
+            intel = p.get("intel") or {}
+            if intel.get("use"):
+                print(f"  {'':>{col_p}} {_c(Fore.CYAN,'Use :')} {intel['use']}")
+            if intel.get("risk"):
+                print(f"  {'':>{col_p}} {_c(Fore.YELLOW,'Risk:')} {intel['risk']}")
 
-    print(Fore.CYAN + "  " + "─" * total_w)
+    print(f"  {sep2}")
+    open_c = sum(1 for p in ports if p["state"] == "open")
+    print(f"  Open ports : {_c(Fore.GREEN, str(open_c))}   Total : {len(ports)}")
 
-    open_c     = sum(1 for p in ports if p["state"] == "open")
-    closed_c   = sum(1 for p in ports if p["state"] == "closed")
-    filtered_c = sum(1 for p in ports if p["state"] not in ("open","closed"))
+    if risk.get("breakdown"):
+        print(f"\n  {_c(Fore.YELLOW,'Risk breakdown:')}")
+        for b in risk["breakdown"]:
+            print(f"    {b}")
 
+    print(_c(Fore.RED, f"  {sep}\n"))
+
+
+def _print_no_ports():
+    sep = "━" * 54
+    print(_c(Fore.YELLOW, f"\n  {sep}"))
+    print(_c(Fore.YELLOW,  "  No open ports discovered."))
     print()
-    print(Fore.WHITE + Style.BRIGHT + "  ── SUMMARY " + "─" * 42)
-    print(Fore.GREEN  + f"  Open     : {open_c}")
-    if closed_c:   print(Fore.RED    + f"  Closed   : {closed_c}")
-    if filtered_c: print(Fore.YELLOW + f"  Filtered : {filtered_c}")
-    print(Fore.WHITE  + f"  Total    : {len(ports)}")
-
-    if risk and risk.get("breakdown"):
-        print(Fore.WHITE + Style.BRIGHT + "\n  ── RISK BREAKDOWN " + "─" * 35)
-        for line in risk["breakdown"]:
-            print(Fore.YELLOW + f"  {line}")
-
-    print(Fore.WHITE + "  " + "─" * 53)
+    print("  Host may be:")
+    print("    • Filtered by a firewall")
+    print("    • Offline or unreachable")
+    print("    • Blocking probes")
     print()
-    print_success(f"Scan complete — {open_c} open port(s) on {host}")
-    print()
-
-
-# ─── Scan comparison display ──────────────────────────────────────────────────
-
-def print_comparison(comp: dict):
-    """Display diff between two scans for the same target."""
-    print_section("SCAN COMPARISON")
-
-    prev = comp["previous"]
-    curr = comp["current"]
-
-    print(Fore.CYAN + f"  Previous scan : " + Fore.WHITE + prev.get("start_time","?")
-          + Fore.CYAN + f"  (open: {prev.get('open_count','?')})")
-    print(Fore.CYAN + f"  Current scan  : " + Fore.WHITE + curr.get("start_time","?")
-          + Fore.CYAN + f"  (open: {curr.get('open_count','?')})")
-    print()
-
-    new_ports    = comp.get("new_ports", [])
-    closed_ports = comp.get("closed_ports", [])
-    unchanged    = comp.get("unchanged", [])
-
-    if new_ports:
-        print(Fore.GREEN + Style.BRIGHT + f"  ✚ New ports detected ({len(new_ports)}):")
-        for p in new_ports:
-            print(Fore.GREEN + f"      → {p}/tcp")
-    else:
-        print(Fore.GREEN + "  No new ports since last scan.")
-
-    if closed_ports:
-        print(Fore.RED + Style.BRIGHT + f"\n  ✖ Ports closed/filtered since last scan ({len(closed_ports)}):")
-        for p in closed_ports:
-            print(Fore.RED + f"      → {p}/tcp")
-    else:
-        print(Fore.RED + "  No ports closed since last scan.")
-
-    if unchanged:
-        print(Fore.CYAN + f"\n  ═ Unchanged open ports ({len(unchanged)}): "
-              + Fore.WHITE + ", ".join(unchanged))
-    print()
+    print("  Try a different scan mode or check the target.")
+    print(_c(Fore.YELLOW, f"  {sep}\n"))
 
 
 # ─── History table ────────────────────────────────────────────────────────────
 
 def print_history_table(rows: list[dict]):
     if not rows:
-        print_warning("No scan history in database yet.")
+        print_warning("No scan history found.")
         return
-
-    print_section("SCAN HISTORY")
-    print(Fore.WHITE + Style.BRIGHT
-          + "  " + "#".ljust(4) + "DATE".ljust(22) + "TARGET".ljust(20)
-          + "MODE".ljust(20) + "OPEN".ljust(6) + "RISK".ljust(6) + "DUR")
-    print(Fore.CYAN + "  " + "─" * 80)
-
-    for i, row in enumerate(rows, 1):
-        score = row.get("risk_score", 0)
-        rc = Fore.RED if score >= 70 else Fore.YELLOW if score >= 40 else Fore.GREEN
-        print(
-            "  "
-            + Fore.WHITE + Style.BRIGHT + str(i).ljust(4)
-            + Fore.WHITE + str(row.get("start_time","?"))[:19].ljust(22)
-            + Fore.CYAN  + str(row.get("target","?"))[:18].ljust(20)
-            + Fore.WHITE + str(row.get("mode_name","?"))[:18].ljust(20)
-            + Fore.GREEN + str(row.get("open_count","?")).ljust(6)
-            + rc + str(score).ljust(6)
-            + Fore.WHITE + f"{row.get('duration_s',0):.1f}s"
-        )
-
-    print(Fore.CYAN + "  " + "─" * 80)
+    print(_c(Fore.CYAN, f"\n  {'ID':<5} {'Target':<18} {'Mode':<22} {'Open':<6} {'Risk':<6} {'Date'}"))
+    print("  " + "─" * 70)
+    for r in rows:
+        print(f"  {r['id']:<5} {r['target']:<18} {r['mode_name']:<22} "
+              f"{r['open_count']:<6} {r['risk_score']:<6} {r['created_at']}")
     print()
+
+
+# ─── Comparison view ──────────────────────────────────────────────────────────
+
+def print_comparison(comp: dict):
+    prev = comp["previous"]
+    curr = comp["current"]
+    print(_c(Fore.CYAN, "\n  ┌─ Scan Comparison " + "─" * 46 + "┐"))
+    print(f"  │  Previous : {prev['created_at']}  (open: {prev['open_count']})")
+    print(f"  │  Current  : {curr['created_at']}  (open: {curr['open_count']})")
+    print("  │")
+
+    if comp["new_ports"]:
+        print(_c(Fore.RED, "  │  ✚ New ports detected:"))
+        for p in comp["new_ports"]:
+            print(_c(Fore.RED, f"  │      → {p}/tcp"))
+
+    if comp["closed_ports"]:
+        print(_c(Fore.GREEN, "  │  ✖ Ports now closed:"))
+        for p in comp["closed_ports"]:
+            print(_c(Fore.GREEN, f"  │      → {p}/tcp"))
+
+    if comp["unchanged"]:
+        ports_str = ", ".join(str(p) for p in comp["unchanged"])
+        print(f"  │  ═ Unchanged: {ports_str}")
+
+    print(_c(Fore.CYAN, "  └" + "─" * 64 + "┘\n"))
