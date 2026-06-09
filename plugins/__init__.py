@@ -1,6 +1,7 @@
 """
-plugins/__init__.py — ShadowPort Scanner v2.0.0
-Auto-discovery plugin loader.
+plugins/__init__.py — ShadowPort Scanner v2.1.0
+Auto-discovery plugin loader using importlib.
+Failed imports are skipped with a warning — never crash the app.
 """
 
 import importlib
@@ -12,9 +13,8 @@ from plugins.base import BasePlugin
 
 def load_plugins() -> dict:
     """
-    Scan the plugins/ directory for BasePlugin subclasses.
+    Scan plugins/ directory for BasePlugin subclasses.
     Returns {plugin_name: plugin_instance}.
-    Skips files that fail to import — never crashes.
     """
     registry    = {}
     plugins_dir = os.path.dirname(__file__)
@@ -26,8 +26,8 @@ def load_plugins() -> dict:
         module_name = f"plugins.{filename[:-3]}"
         try:
             module = importlib.import_module(module_name)
-        except Exception as e:
-            print(f"  [!] Could not load plugin '{filename}': {e}")
+        except Exception as exc:
+            print(f"  [!] Could not load plugin '{filename}': {exc}")
             continue
 
         for _, obj in inspect.getmembers(module, inspect.isclass):
@@ -35,7 +35,7 @@ def load_plugins() -> dict:
                 try:
                     instance = obj()
                     registry[instance.name] = instance
-                except Exception as e:
-                    print(f"  [!] Could not instantiate '{obj.__name__}': {e}")
+                except Exception as exc:
+                    print(f"  [!] Could not instantiate '{obj.__name__}': {exc}")
 
     return registry

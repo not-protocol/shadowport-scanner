@@ -1,30 +1,40 @@
 """
-plugins/banner_grabber.py — ShadowPort Scanner v2.0.0
-Built-in plugin: grab service banners from open TCP ports.
+plugins/banner_grabber.py — ShadowPort Scanner v2.1.0
+Built-in plugin: TCP service banner grabbing.
+Max 5s per host as per production checklist requirement.
+Caps at 10 ports to avoid long waits on full scans.
 """
 
 import socket
+
 from plugins.base import BasePlugin
 
 
 class BannerGrabberPlugin(BasePlugin):
     name        = "banner_grabber"
     description = "Grab service banners from open TCP ports"
-    version     = "1.0"
+    version     = "1.1"
 
-    TIMEOUT = 3
+    TIMEOUT   = 5   # max 5s per host (production checklist requirement)
+    PORT_CAP  = 10  # max ports to attempt per scan
 
     def run(self, target: str, scan_data: dict) -> dict:
         open_ports = [
-            int(p["port"]) for p in scan_data.get("ports", [])
-            if p["state"] == "open" and p["proto"] == "tcp"
+            int(p["port"])
+            for p in scan_data.get("ports", [])
+            if p.get("state") == "open" and p.get("proto") == "tcp"
         ]
 
         if not open_ports:
             return {"output": "  No open TCP ports to grab banners from."}
 
-        lines = [f"  Grabbing banners from {len(open_ports)} open port(s)...\n"]
-        for port in open_ports[:10]:
+        capped = open_ports[: self.PORT_CAP]
+        lines  = [
+            f"  Grabbing banners from {len(capped)} port(s)"
+            f" (capped at {self.PORT_CAP})…\n"
+        ]
+
+        for port in capped:
             banner = self._grab(target, port)
             if banner:
                 lines.append(f"  {port}/tcp  →  {banner[:120]}")
