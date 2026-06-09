@@ -1,3 +1,20 @@
+# ShadowPort Scanner v2.1.0 — Python dependencies
+# Install with:
+#   sudo pip install -r requirements.txt --break-system-packages
+
+# Core scanning
 python-nmap>=0.7.1
+
+# Terminal UI
 colorama>=0.4.6
+textual>=0.47.0
+
+# Excel logging
+openpyxl>=3.1.2
+
+# Testing
 pytest>=8.0.0
+pytest-cov>=4.1.0
+
+# Optional: PDF export via HTML rendering
+# weasyprint>=60.0
