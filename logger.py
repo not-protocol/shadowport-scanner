@@ -1,7 +1,6 @@
 """
-logger.py — ShadowPort Scanner v2.0.0
-Centralised error logging to logs/error.log.
-Never shown to the user; written silently in the background.
+logger.py — ShadowPort Scanner v2.1.0
+Silent error logging to Log/error.log. Never shown to user.
 """
 
 import os
@@ -19,23 +18,14 @@ def _ensure_log():
 
 
 def log_error(target: str = "", mode: str = "", error: str = "", exc: Exception = None):
-    """
-    Append one structured error entry to logs/error.log.
-
-    Parameters
-    ----------
-    target : str   — IP / hostname being scanned when error occurred
-    mode   : str   — scan mode name
-    error  : str   — short human description of the error
-    exc    : Exception (optional) — if provided, full traceback is appended
-    """
     try:
         _ensure_log()
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         trace = ""
         if exc:
-            trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-
+            trace = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
         entry = (
             f"\n[{ts}]\n"
             f"  TARGET : {target or '—'}\n"
@@ -43,12 +33,10 @@ def log_error(target: str = "", mode: str = "", error: str = "", exc: Exception 
             f"  ERROR  : {error}\n"
         )
         if trace:
-            entry += f"  TRACE  :\n"
             for line in trace.splitlines():
                 entry += f"    {line}\n"
         entry += "  " + "─" * 60 + "\n"
-
         with open(ERROR_LOG, "a", encoding="utf-8") as f:
             f.write(entry)
     except Exception:
-        pass  # logging must never crash the app
+        pass

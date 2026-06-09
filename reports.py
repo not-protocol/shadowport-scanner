@@ -1,12 +1,13 @@
 """
-reports.py — ShadowPort Scanner v2.0.0
-Save scan results: TXT, JSON, XML, HTML.
-Permission-safe: always writes inside the project directory.
+reports.py — ShadowPort Scanner v2.1.0
+Export scan results: TXT, JSON, XML, HTML.
 
-v2.0.0 changes:
-  - All report failures caught and shown clearly
-  - Never crashes on permission error
-  - Partial scan flagged in reports
+v2.1.0 additions:
+  - Partial scan flagged in all four formats
+  - Service KB notes embedded in HTML report
+  - All exceptions caught — never crashes
+  - Reports chmod 644 after write
+  - Silent error logging on failure
 """
 
 import json
@@ -25,10 +26,8 @@ def _ensure_dirs():
     for d in (REPORTS_DIR, LOGS_DIR):
         os.makedirs(d, exist_ok=True)
         try:
-            current_mode = os.stat(d).st_mode
-            desired_mode = current_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR
-            if current_mode != desired_mode:
-                os.chmod(d, desired_mode)
+            mode = os.stat(d).st_mode
+            os.chmod(d, mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
         except PermissionError:
             pass
 
@@ -41,11 +40,11 @@ def _host_safe(host: str) -> str:
     return host.replace(".", "-").replace(":", "-").replace("/", "-")
 
 
-# ─── TXT builder ─────────────────────────────────────────────────────────────
+# ─── TXT ─────────────────────────────────────────────────────────────────────
 
 def _build_txt(scan_data: dict) -> str:
-    sep  = "═" * 62
-    sep2 = "─" * 62
+    sep     = "═" * 64
+    sep2    = "─" * 64
     risk    = scan_data.get("risk", {})
     partial = scan_data.get("partial", False)
 
@@ -59,18 +58,18 @@ def _build_txt(scan_data: dict) -> str:
     if scan_data.get("hostname"):
         lines.append(f"  Hostname   : {scan_data['hostname']}")
     lines += [
-        f"  Status     : {scan_data.get('state','unknown').upper()}",
-        f"  Scan Mode  : {scan_data.get('mode_name','N/A')}",
-        f"  Started    : {scan_data.get('start_time','N/A')}",
-        f"  Finished   : {scan_data.get('end_time','N/A')}",
-        f"  Duration   : {scan_data.get('duration_seconds',0):.1f}s",
+        f"  Status     : {scan_data.get('state', 'unknown').upper()}",
+        f"  Scan Mode  : {scan_data.get('mode_name', 'N/A')}",
+        f"  Started    : {scan_data.get('start_time', 'N/A')}",
+        f"  Finished   : {scan_data.get('end_time', 'N/A')}",
+        f"  Duration   : {scan_data.get('duration_seconds', 0):.1f}s",
     ]
     if partial:
-        lines.append("  NOTE       : Partial results — scan was interrupted by timeout.")
+        lines.append("  NOTE       : ⚠ Partial results — scan interrupted by timeout.")
     if scan_data.get("os_matches"):
         lines.append(f"  OS Match   : {scan_data['os_matches'][0]}")
     if risk:
-        lines.append(f"  Risk Score : {risk.get('score',0)}/100  [{risk.get('label','')}]")
+        lines.append(f"  Risk Score : {risk.get('score', 0)}/100  [{risk.get('label', '')}]")
     lines += [sep, ""]
 
     ports = scan_data.get("ports", [])
@@ -79,23 +78,25 @@ def _build_txt(scan_data: dict) -> str:
         lines.append("  Host may be filtered, offline, or blocking probes.")
     else:
         col_p, col_s, col_sv, col_v = 14, 12, 20, 30
-        lines.append("  " + "PORT".ljust(col_p) + "STATE".ljust(col_s)
-                     + "SERVICE".ljust(col_sv) + "VERSION")
+        lines.append(
+            "  " + "PORT".ljust(col_p) + "STATE".ljust(col_s)
+            + "SERVICE".ljust(col_sv) + "VERSION"
+        )
         lines.append("  " + sep2)
         for p in ports:
             lines.append(
                 "  "
-                + f"{p['port']}/{p['proto']}".ljust(col_p)
-                + p["state"].ljust(col_s)
-                + p["service"].ljust(col_sv)
+                + f"{p['port']}/{p.get('proto', 'tcp')}".ljust(col_p)
+                + p.get("state", "").ljust(col_s)
+                + p.get("service", "").ljust(col_sv)
                 + p.get("version", "")[:col_v]
             )
             intel = p.get("intel")
-            if intel and p["state"] == "open":
-                lines.append(f"       Use : {intel.get('use','')}")
-                lines.append(f"       Risk: {intel.get('risk','')}")
+            if intel and p.get("state") == "open":
+                lines.append(f"       Use : {intel.get('use', '')}")
+                lines.append(f"       Risk: {intel.get('risk', '')}")
         lines.append("  " + sep2)
-        open_c = sum(1 for p in ports if p["state"] == "open")
+        open_c = sum(1 for p in ports if p.get("state") == "open")
         lines += [f"\n  Open ports : {open_c}", f"  Total      : {len(ports)}"]
 
         if risk.get("breakdown"):
@@ -107,30 +108,33 @@ def _build_txt(scan_data: dict) -> str:
     return "\n".join(lines)
 
 
-# ─── HTML builder ─────────────────────────────────────────────────────────────
+# ─── HTML ─────────────────────────────────────────────────────────────────────
 
 def _build_html(scan_data: dict) -> str:
-    host      = scan_data.get("host", "N/A")
-    hostname  = scan_data.get("hostname", "")
-    state     = scan_data.get("state", "unknown")
-    ports     = scan_data.get("ports", [])
-    os_match  = (scan_data.get("os_matches") or ["N/A"])[0]
-    risk      = scan_data.get("risk", {})
-    partial   = scan_data.get("partial", False)
-    open_c    = sum(1 for p in ports if p["state"] == "open")
-    closed_c  = sum(1 for p in ports if p["state"] == "closed")
-    filt_c    = sum(1 for p in ports if p["state"] not in ("open", "closed"))
-    score     = risk.get("score", 0)
+    host       = scan_data.get("host", "N/A")
+    hostname   = scan_data.get("hostname", "")
+    state      = scan_data.get("state", "unknown")
+    ports      = scan_data.get("ports", [])
+    os_match   = (scan_data.get("os_matches") or ["N/A"])[0]
+    risk       = scan_data.get("risk", {})
+    partial    = scan_data.get("partial", False)
+    open_c     = sum(1 for p in ports if p.get("state") == "open")
+    closed_c   = sum(1 for p in ports if p.get("state") == "closed")
+    filt_c     = sum(1 for p in ports if p.get("state") not in ("open", "closed"))
+    score      = risk.get("score", 0)
     risk_label = risk.get("label", "N/A")
     risk_color = "#ff4455" if score >= 70 else "#ffcc00" if score >= 40 else "#00ff88"
 
     rows = ""
     for p in ports:
-        sc = ("#00ff88" if p["state"] == "open"
-              else "#ff4455" if p["state"] == "closed" else "#ffcc00")
-        intel = p.get("intel") or {}
+        sc = (
+            "#00ff88" if p.get("state") == "open"   else
+            "#ff4455" if p.get("state") == "closed"  else
+            "#ffcc00"
+        )
+        intel     = p.get("intel") or {}
         intel_row = ""
-        if p["state"] == "open" and intel:
+        if p.get("state") == "open" and intel:
             intel_row = (
                 f"<tr class='intel-row'><td colspan='2'></td><td colspan='2'>"
                 f"<span class='intel-use'>📋 {intel.get('use','')}</span><br>"
@@ -139,29 +143,24 @@ def _build_html(scan_data: dict) -> str:
             )
         rows += (
             f"<tr>"
-            f"<td><b>{p['port']}/{p['proto']}</b></td>"
-            f"<td style='color:{sc}'>{p['state']}</td>"
-            f"<td>{p['service']}</td>"
+            f"<td><b>{p['port']}/{p.get('proto','tcp')}</b></td>"
+            f"<td style='color:{sc}'>{p.get('state','')}</td>"
+            f"<td>{p.get('service','')}</td>"
             f"<td>{p.get('version','')}</td>"
             f"</tr>{intel_row}\n"
         )
 
     breakdown_html = "".join(f"<li>{b}</li>" for b in risk.get("breakdown", []))
     partial_banner = (
-        "<div style='background:#332200;border:1px solid #ffcc00;border-radius:6px;"
-        "padding:.7rem 1rem;margin-bottom:1rem;color:#ffcc00;font-size:.85rem'>"
-        "⚠ Partial results — scan was interrupted by timeout.</div>"
+        "<div class='partial-banner'>⚠ Partial results — "
+        "scan was interrupted by timeout.</div>"
         if partial else ""
     )
-
-    no_ports_html = ""
-    if not ports:
-        no_ports_html = (
-            "<div style='color:var(--yellow);padding:1rem'>"
-            "No open ports discovered.<br>"
-            "<span style='color:var(--dim);font-size:.85rem'>"
-            "Host may be filtered, offline, or blocking probes.</span></div>"
-        )
+    no_ports_html = (
+        "<div class='no-ports'>No open ports discovered.<br>"
+        "<span class='dim'>Host may be filtered, offline, or blocking probes.</span></div>"
+        if not ports else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -179,7 +178,8 @@ def _build_html(scan_data: dict) -> str:
   h1{{color:var(--red);font-size:1.7rem;letter-spacing:3px;text-transform:uppercase;margin-bottom:.3rem}}
   .sub{{color:var(--cyan);font-size:.85rem;margin-bottom:2rem}}
   .card{{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}}
-  .card h2{{color:var(--cyan);font-size:.9rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:1rem;border-bottom:1px solid var(--border);padding-bottom:.5rem}}
+  .card h2{{color:var(--cyan);font-size:.9rem;letter-spacing:2px;text-transform:uppercase;
+            margin-bottom:1rem;border-bottom:1px solid var(--border);padding-bottom:.5rem}}
   .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}}
   .meta-row{{display:flex;gap:1rem}}
   .meta-label{{color:var(--dim);min-width:120px}}
@@ -191,7 +191,8 @@ def _build_html(scan_data: dict) -> str:
   .risk-bar-bg{{background:#1a2740;border-radius:4px;height:18px;margin-top:1rem}}
   .risk-bar-fill{{height:18px;border-radius:4px}}
   table{{width:100%;border-collapse:collapse;font-size:.88rem}}
-  th{{background:#0d1929;color:var(--cyan);padding:.6rem .8rem;text-align:left;letter-spacing:1px;text-transform:uppercase}}
+  th{{background:#0d1929;color:var(--cyan);padding:.6rem .8rem;text-align:left;
+      letter-spacing:1px;text-transform:uppercase}}
   td{{padding:.5rem .8rem;border-bottom:1px solid #1a2740}}
   tr:hover td{{background:#151f35}}
   .intel-row td{{padding:.2rem .8rem .6rem 2rem;background:#0d1929}}
@@ -199,6 +200,10 @@ def _build_html(scan_data: dict) -> str:
   .intel-risk{{color:var(--yellow);font-size:.8rem}}
   .breakdown{{margin-top:.5rem;padding-left:1.2rem}}
   .breakdown li{{color:var(--yellow);font-size:.85rem;margin:.2rem 0}}
+  .partial-banner{{background:#332200;border:1px solid var(--yellow);border-radius:6px;
+                   padding:.7rem 1rem;margin-bottom:1rem;color:var(--yellow);font-size:.85rem}}
+  .no-ports{{color:var(--yellow);padding:1rem}}
+  .dim{{color:var(--dim);font-size:.85rem}}
   .footer{{color:var(--dim);font-size:.75rem;text-align:center;margin-top:2rem}}
 </style>
 </head>
@@ -211,25 +216,36 @@ def _build_html(scan_data: dict) -> str:
 <div class="card">
   <h2>Host Information</h2>
   <div class="meta-grid">
-    <div class="meta-row"><span class="meta-label">Target</span><span class="meta-val">{host}</span></div>
-    <div class="meta-row"><span class="meta-label">Hostname</span><span class="meta-val">{hostname or '—'}</span></div>
+    <div class="meta-row"><span class="meta-label">Target</span>
+      <span class="meta-val">{host}</span></div>
+    <div class="meta-row"><span class="meta-label">Hostname</span>
+      <span class="meta-val">{hostname or '—'}</span></div>
     <div class="meta-row"><span class="meta-label">Status</span>
       <span class="meta-val" style="color:{'var(--green)' if state=='up' else 'var(--red)'}">{state.upper()}</span></div>
-    <div class="meta-row"><span class="meta-label">OS Match</span><span class="meta-val">{os_match}</span></div>
-    <div class="meta-row"><span class="meta-label">Scan Mode</span><span class="meta-val">{scan_data.get('mode_name','N/A')}</span></div>
-    <div class="meta-row"><span class="meta-label">Duration</span><span class="meta-val">{scan_data.get('duration_seconds',0):.1f}s</span></div>
-    <div class="meta-row"><span class="meta-label">Started</span><span class="meta-val">{scan_data.get('start_time','N/A')}</span></div>
-    <div class="meta-row"><span class="meta-label">Finished</span><span class="meta-val">{scan_data.get('end_time','N/A')}</span></div>
+    <div class="meta-row"><span class="meta-label">OS Match</span>
+      <span class="meta-val">{os_match}</span></div>
+    <div class="meta-row"><span class="meta-label">Scan Mode</span>
+      <span class="meta-val">{scan_data.get('mode_name','N/A')}</span></div>
+    <div class="meta-row"><span class="meta-label">Duration</span>
+      <span class="meta-val">{scan_data.get('duration_seconds',0):.1f}s</span></div>
+    <div class="meta-row"><span class="meta-label">Started</span>
+      <span class="meta-val">{scan_data.get('start_time','N/A')}</span></div>
+    <div class="meta-row"><span class="meta-label">Finished</span>
+      <span class="meta-val">{scan_data.get('end_time','N/A')}</span></div>
   </div>
 </div>
 
 <div class="card">
   <h2>Port Summary</h2>
   <div class="summary">
-    <div class="stat"><div class="stat-num" style="color:var(--green)">{open_c}</div><div class="stat-lbl">Open</div></div>
-    <div class="stat"><div class="stat-num" style="color:var(--red)">{closed_c}</div><div class="stat-lbl">Closed</div></div>
-    <div class="stat"><div class="stat-num" style="color:var(--yellow)">{filt_c}</div><div class="stat-lbl">Filtered</div></div>
-    <div class="stat"><div class="stat-num" style="color:var(--cyan)">{len(ports)}</div><div class="stat-lbl">Total</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--green)">{open_c}</div>
+      <div class="stat-lbl">Open</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--red)">{closed_c}</div>
+      <div class="stat-lbl">Closed</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--yellow)">{filt_c}</div>
+      <div class="stat-lbl">Filtered</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--cyan)">{len(ports)}</div>
+      <div class="stat-lbl">Total</div></div>
   </div>
 </div>
 
@@ -244,7 +260,7 @@ def _build_html(scan_data: dict) -> str:
   </div>
   {"<ul class='breakdown'>" + breakdown_html + "</ul>" if breakdown_html else ""}
   <p style="color:var(--dim);font-size:.75rem;margin-top:.8rem">
-    ℹ Risk score is informational only. Not a vulnerability assessment.
+    ℹ Informational only. Not a vulnerability assessment.
   </p>
 </div>
 
@@ -252,32 +268,34 @@ def _build_html(scan_data: dict) -> str:
   <h2>Port Details</h2>
   {no_ports_html if not ports else f"""
   <table>
-    <thead><tr><th>Port</th><th>State</th><th>Service</th><th>Version</th></tr></thead>
+    <thead>
+      <tr><th>Port</th><th>State</th><th>Service</th><th>Version</th></tr>
+    </thead>
     <tbody>{rows}</tbody>
   </table>"""}
 </div>
 
 <div class="footer">
-  Generated by {TOOL_NAME} v{VERSION} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+  Generated by {TOOL_NAME} v{VERSION}
+  at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
   — Use only on systems you own or are authorized to test.
 </div>
 </body>
 </html>"""
 
 
-# ─── Public API ──────────────────────────────────────────────────────────────
+# ─── Public API ───────────────────────────────────────────────────────────────
 
 def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
     """
-    Save scan_data in the requested format.
-    Returns filepath on success, None on failure.
-    Never raises — all errors are caught and shown clearly.
+    Save scan in requested format. Returns filepath or None on failure.
+    Never raises — all errors caught and displayed clearly.
     """
     try:
         _ensure_dirs()
     except Exception as exc:
         print_error(f"Could not create reports directory: {exc}")
-        print_warning("Fix with: sudo chown -R $USER:$USER reports/ logs/")
+        print_warning("Fix with: sudo chown -R $USER:$USER reports/ Log/")
         return None
 
     fmt      = fmt.lower().strip()
@@ -289,30 +307,36 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
     try:
         if fmt == "txt":
             content = _build_txt(scan_data)
+
         elif fmt == "json":
             content = json.dumps({
                 "meta": {
                     "tool":      f"{TOOL_NAME} v{VERSION}",
                     "generated": datetime.now().isoformat(),
                     "partial":   scan_data.get("partial", False),
+                    "version":   VERSION,
                 },
                 "scan": scan_data,
             }, indent=2)
+
         elif fmt == "xml":
             ports    = scan_data.get("ports", [])
             port_xml = "\n".join(
-                f'      <port protocol="{p["proto"]}" portid="{p["port"]}">'
-                f'<state state="{p["state"]}"/>'
-                f'<service name="{p["service"]}" version="{p.get("version","")}" />'
+                f'      <port protocol="{p.get("proto","tcp")}" portid="{p["port"]}">'
+                f'<state state="{p.get("state","")}"/>'
+                f'<service name="{p.get("service","")}" version="{p.get("version","")}" />'
                 f'</port>'
                 for p in ports
             )
-            risk = scan_data.get("risk", {})
+            risk    = scan_data.get("risk", {})
+            partial = str(scan_data.get("partial", False)).lower()
             content = (
                 f'<?xml version="1.0" encoding="UTF-8"?>\n'
-                f'<shadowport_scan partial="{scan_data.get("partial", False)}">\n'
-                f'  <meta><tool>{TOOL_NAME} v{VERSION}</tool>'
-                f'<generated>{datetime.now().isoformat()}</generated></meta>\n'
+                f'<shadowport_scan version="{VERSION}" partial="{partial}">\n'
+                f'  <meta>\n'
+                f'    <tool>{TOOL_NAME} v{VERSION}</tool>\n'
+                f'    <generated>{datetime.now().isoformat()}</generated>\n'
+                f'  </meta>\n'
                 f'  <host>\n'
                 f'    <address addr="{scan_data.get("host","")}" addrtype="ipv4"/>\n'
                 f'    <hostname>{scan_data.get("hostname","")}</hostname>\n'
@@ -322,12 +346,14 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
                 f'    <end_time>{scan_data.get("end_time","")}</end_time>\n'
                 f'    <duration_seconds>{scan_data.get("duration_seconds",0)}</duration_seconds>\n'
                 f'    <risk score="{risk.get("score",0)}" label="{risk.get("label","")}"/>\n'
-                f'    <ports>{port_xml}</ports>\n'
+                f'    <ports>\n{port_xml}\n    </ports>\n'
                 f'  </host>\n'
                 f'</shadowport_scan>\n'
             )
+
         elif fmt == "html":
             content = _build_html(scan_data)
+
         else:
             print_error(f"Unknown format '{fmt}'. Choose: txt, json, xml, html")
             return None
@@ -345,26 +371,42 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
 
     except PermissionError as exc:
         print_error("Report generation failed.")
-        print_error(f"Reason: Permission denied — {REPORTS_DIR} not writable.")
-        print_warning(f"Fix with: sudo chown -R $USER:$USER reports/")
-        log_error(target=scan_data.get("host",""), mode="report", error=str(exc), exc=exc)
+        print_error(f"Reason: Permission denied writing to {REPORTS_DIR}")
+        print_warning("Fix with: sudo chown -R $USER:$USER reports/")
+        log_error(
+            target=scan_data.get("host", ""),
+            mode="report",
+            error=str(exc),
+            exc=exc,
+        )
         return None
+
     except OSError as exc:
-        print_error("Report generation failed.")
-        print_error(f"Reason: {exc}")
-        log_error(target=scan_data.get("host",""), mode="report", error=str(exc), exc=exc)
+        print_error(f"Report generation failed: {exc}")
+        log_error(
+            target=scan_data.get("host", ""),
+            mode="report",
+            error=str(exc),
+            exc=exc,
+        )
         return None
+
     except Exception as exc:
         print_error(f"Report generation failed unexpectedly: {exc}")
-        log_error(target=scan_data.get("host",""), mode="report", error=str(exc), exc=exc)
+        log_error(
+            target=scan_data.get("host", ""),
+            mode="report",
+            error=str(exc),
+            exc=exc,
+        )
         return None
 
 
 def prompt_save(scan_data: dict):
-    """Ask user whether to save and in which format."""
+    """Prompt user to save a report and in which format."""
     print()
     try:
-        choice = input("  Save results? (y/n): ").strip().lower()
+        choice = input("  Save report? (y/n): ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return
     if choice != "y":
@@ -375,7 +417,7 @@ def prompt_save(scan_data: dict):
     print("    [1] TXT  — plain text")
     print("    [2] JSON — machine-readable")
     print("    [3] XML  — structured markup")
-    print("    [4] HTML — styled browser report (recommended)")
+    print("    [4] HTML — styled browser report  ★ recommended")
     print()
 
     try:
