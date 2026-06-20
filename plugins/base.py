@@ -1,7 +1,4 @@
-"""
-plugins/base.py — ShadowPort Scanner v2.1.0
-Abstract base class every plugin must inherit from.
-"""
+"""plugins/base.py — ShadowPort Scanner v2.3.0"""
 
 from abc import ABC, abstractmethod
 
@@ -13,11 +10,8 @@ class BasePlugin(ABC):
 
     @abstractmethod
     def run(self, target: str, scan_data: dict) -> dict:
-        """
-        Execute the plugin.
-        Returns dict with at least {"output": str}.
-        """
+        """Execute plugin. Returns {'output': str}."""
         ...
 
     def __repr__(self) -> str:
-        return f"<Plugin [{self.name}] v{self.version}: {self.description}>"
+        return f"<Plugin [{self.name}] v{self.version}>"

@@ -1,53 +1,28 @@
-"""
-plugins/service_intel.py — ShadowPort Scanner v2.1.0
-Built-in plugin: shows Service Knowledge Base info for each open port.
-Integrates core/service_kb.py into the plugin system.
-"""
+"""plugins/service_intel.py — ShadowPort Scanner v2.3.0"""
 
 from plugins.base import BasePlugin
-from core.service_kb import get_service_info
+from config.settings import SERVICE_INTEL
 
 
 class ServiceIntelPlugin(BasePlugin):
     name        = "service_intel"
-    description = "Show Service Knowledge Base details for every open port"
+    description = "Show security intel for every open port"
     version     = "1.0"
 
-    def run(self, target: str, scan_data: dict) -> dict:
-        open_ports = [
-            p for p in scan_data.get("ports", [])
-            if p.get("state") == "open"
-        ]
+    RISK_ICON = {"critical":"🔴","high":"🟠","medium":"🟡","low":"🟢"}
 
+    def run(self, target: str, scan_data: dict) -> dict:
+        open_ports = [p for p in scan_data.get("ports",[]) if p.get("state")=="open"]
         if not open_ports:
             return {"output": "  No open ports to analyse."}
-
-        lines = [f"  Service Intelligence for {target}\n"]
+        lines = [f"  Service Intelligence — {target}\n"]
         sep   = "  " + "─" * 58
-
         for p in open_ports:
-            try:
-                port_num = int(p["port"])
-            except (ValueError, KeyError):
-                continue
-
-            info = get_service_info(port_num)
-            risk_tag = {
-                "critical": "🔴 CRITICAL",
-                "high":     "🟠 HIGH",
-                "medium":   "🟡 MEDIUM",
-                "low":      "🟢 LOW",
-            }.get(info.risk_level, info.risk_level.upper())
-
+            svc   = p.get("service","").lower()
+            intel = SERVICE_INTEL.get(svc) or SERVICE_INTEL.get("unknown")
             lines.append(sep)
-            lines.append(
-                f"  Port {p['port']}/{p.get('proto','tcp')}"
-                f"  {info.name}"
-                f"  [{risk_tag}]"
-            )
-            lines.append(f"  Purpose     : {info.purpose}")
-            lines.append(f"  Common uses : {', '.join(info.common_uses)}")
-            lines.append(f"  Notes       : {info.security_notes}")
-
+            lines.append(f"  {p['port']}/{p.get('proto','tcp')}  {svc.upper()}")
+            lines.append(f"  Use  : {intel.get('use','')}")
+            lines.append(f"  Risk : {intel.get('risk','')}")
         lines.append(sep)
         return {"output": "\n".join(lines)}
