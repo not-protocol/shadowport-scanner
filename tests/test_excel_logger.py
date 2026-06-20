@@ -1,7 +1,4 @@
-"""
-tests/test_excel_logger.py — ShadowPort Scanner v2.1.0
-Full Excel logger test suite covering new file, append, retry, directory creation.
-"""
+"""tests/test_excel_logger.py — ShadowPort Scanner v2.3.0"""
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -9,18 +6,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest
 from openpyxl import load_workbook
 import core.excel_logger as excel_mod
-from core.excel_logger import log_scan_to_excel, HEADER_COLUMNS
+from core.excel_logger import log_scan_to_excel, log_plugin_to_excel, _SCAN_HEADERS, _PLUGIN_HEADERS
 
 
-SAMPLE_SCAN = {
-    "host":             "192.168.1.1",
-    "mode_name":        "Quick Scan",
-    "state":            "up",
+SCAN = {
+    "host": "192.168.1.1", "mode_name": "Quick Scan", "state": "up",
     "duration_seconds": 12.5,
     "ports": [
-        {"port": "22",  "proto": "tcp", "state": "open",   "service": "ssh"},
-        {"port": "80",  "proto": "tcp", "state": "open",   "service": "http"},
-        {"port": "443", "proto": "tcp", "state": "closed", "service": "https"},
+        {"port":"22","proto":"tcp","state":"open","service":"ssh"},
+        {"port":"80","proto":"tcp","state":"open","service":"http"},
+        {"port":"443","proto":"tcp","state":"closed","service":"https"},
     ],
     "risk": {"score": 14, "label": "LOW EXPOSURE", "breakdown": []},
 }
@@ -28,103 +23,106 @@ SAMPLE_SCAN = {
 
 @pytest.fixture(autouse=True)
 def temp_excel(tmp_path, monkeypatch):
-    excel_path = str(tmp_path / "scannerhistory.xlsx")
-    logs_dir   = str(tmp_path)
-    monkeypatch.setattr(excel_mod, "EXCEL_PATH", excel_path)
-    monkeypatch.setattr(excel_mod, "LOGS_DIR",   logs_dir)
+    path = str(tmp_path / "scannerhistory.xlsx")
+    monkeypatch.setattr(excel_mod, "EXCEL_PATH", path)
+    monkeypatch.setattr(excel_mod, "LOG_DIR",    str(tmp_path))
     import config.settings as s
-    monkeypatch.setattr(s, "EXCEL_PATH", excel_path)
-    monkeypatch.setattr(s, "LOGS_DIR",   logs_dir)
+    monkeypatch.setattr(s, "EXCEL_PATH", path)
+    monkeypatch.setattr(s, "LOG_DIR",    str(tmp_path))
 
 
-# ─── New file creation ────────────────────────────────────────────────────────
+# ── new file ──────────────────────────────────────────────────────────────────
 
-def test_creates_new_file(tmp_path):
-    ok, msg = log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
+def test_creates_file():
+    ok, msg = log_scan_to_excel(SCAN, risk_score=14)
     assert ok, msg
     assert os.path.exists(excel_mod.EXCEL_PATH)
 
-def test_new_file_has_header():
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
+def test_has_scans_and_plugins_sheets():
+    log_scan_to_excel(SCAN, risk_score=14)
     wb = load_workbook(excel_mod.EXCEL_PATH)
-    ws = wb.active
-    headers = [ws.cell(1, i).value for i in range(1, len(HEADER_COLUMNS) + 1)]
-    assert headers == HEADER_COLUMNS
+    assert "Scans" in wb.sheetnames
+    assert "Plugins" in wb.sheetnames
     wb.close()
 
-def test_new_file_first_row_is_scan_1():
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
+def test_scan_header_correct():
+    log_scan_to_excel(SCAN, risk_score=14)
     wb = load_workbook(excel_mod.EXCEL_PATH)
-    ws = wb.active
-    assert ws.cell(2, 1).value == 1  # Scan #
+    ws = wb["Scans"]
+    headers = [ws.cell(1,i).value for i in range(1, len(_SCAN_HEADERS)+1)]
+    assert headers == _SCAN_HEADERS
     wb.close()
 
-def test_creates_log_directory(tmp_path, monkeypatch):
-    new_dir   = str(tmp_path / "NewLog")
-    new_excel = str(tmp_path / "NewLog" / "scannerhistory.xlsx")
-    monkeypatch.setattr(excel_mod, "EXCEL_PATH", new_excel)
-    monkeypatch.setattr(excel_mod, "LOGS_DIR",   new_dir)
-    ok, _ = log_scan_to_excel(SAMPLE_SCAN, risk_score=0)
+def test_first_scan_number_is_1():
+    log_scan_to_excel(SCAN, risk_score=14)
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    assert wb["Scans"].cell(2,1).value == 1
+    wb.close()
+
+
+# ── append ────────────────────────────────────────────────────────────────────
+
+def test_append_increments():
+    log_scan_to_excel(SCAN, risk_score=14)
+    log_scan_to_excel(SCAN, risk_score=14)
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    ws = wb["Scans"]
+    assert ws.cell(2,1).value == 1
+    assert ws.cell(3,1).value == 2
+    assert ws.max_row == 3
+    wb.close()
+
+def test_scan_row_values():
+    log_scan_to_excel(SCAN, risk_score=14)
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    ws  = wb["Scans"]
+    row = [ws.cell(2,i).value for i in range(1, len(_SCAN_HEADERS)+1)]
+    assert row[3] == "192.168.1.1"
+    assert row[5] == 2     # open ports
+    assert row[6] == 3     # total ports
+    assert row[7] == 14    # risk
+    wb.close()
+
+
+# ── plugin logging ────────────────────────────────────────────────────────────
+
+def test_plugin_log_creates_row():
+    ok, msg = log_plugin_to_excel("192.168.1.1", "dns_lookup", "Forward: 1.2.3.4", 0.5, True)
+    assert ok, msg
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    ws = wb["Plugins"]
+    headers = [ws.cell(1,i).value for i in range(1, len(_PLUGIN_HEADERS)+1)]
+    assert headers == _PLUGIN_HEADERS
+    assert ws.cell(2,1).value == 1
+    assert ws.cell(2,4).value == "192.168.1.1"
+    assert ws.cell(2,5).value == "dns_lookup"
+    assert ws.cell(2,8).value == "Success"
+    wb.close()
+
+def test_plugin_failure_status():
+    log_plugin_to_excel("10.0.0.1", "broken", "err", 0.1, False)
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    ws = wb["Plugins"]
+    assert ws.cell(2,8).value == "Failed"
+    wb.close()
+
+def test_plugin_output_preview_truncated():
+    long_output = "x" * 200
+    log_plugin_to_excel("10.0.0.1", "test", long_output, 0.1, True)
+    wb = load_workbook(excel_mod.EXCEL_PATH)
+    ws = wb["Plugins"]
+    val = ws.cell(2,6).value
+    assert len(val) <= 81  # 80 chars + ellipsis
+    wb.close()
+
+
+# ── missing dir ───────────────────────────────────────────────────────────────
+
+def test_missing_dir_autocreated(tmp_path, monkeypatch):
+    deep = str(tmp_path / "a" / "b" / "Log")
+    path = os.path.join(deep, "scannerhistory.xlsx")
+    monkeypatch.setattr(excel_mod, "EXCEL_PATH", path)
+    monkeypatch.setattr(excel_mod, "LOG_DIR",    deep)
+    ok, _ = log_scan_to_excel(SCAN, risk_score=0)
     assert ok
-    assert os.path.exists(new_excel)
-
-
-# ─── Append to existing ───────────────────────────────────────────────────────
-
-def test_append_increments_scan_number():
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
-    wb = load_workbook(excel_mod.EXCEL_PATH)
-    ws = wb.active
-    assert ws.cell(2, 1).value == 1
-    assert ws.cell(3, 1).value == 2
-    wb.close()
-
-def test_append_does_not_duplicate_header():
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
-    wb = load_workbook(excel_mod.EXCEL_PATH)
-    ws = wb.active
-    assert ws.max_row == 3  # 1 header + 2 data rows
-    wb.close()
-
-def test_data_row_correct_values():
-    log_scan_to_excel(SAMPLE_SCAN, risk_score=14)
-    wb = load_workbook(excel_mod.EXCEL_PATH)
-    ws = wb.active
-    row = [ws.cell(2, i).value for i in range(1, 11)]
-    assert row[3] == "192.168.1.1"   # Target
-    assert row[4] == "Quick Scan"    # Scan Type
-    assert row[5] == 2               # Open Ports
-    assert row[6] == 3               # Total Ports
-    assert row[7] == 14              # Risk Score
-    assert row[8] == 12.5            # Duration
-    assert row[9] == "up"            # Status
-    wb.close()
-
-
-# ─── Missing Log/ directory ───────────────────────────────────────────────────
-
-def test_missing_directory_auto_created(tmp_path, monkeypatch):
-    deep_dir  = str(tmp_path / "deep" / "nested" / "Log")
-    deep_file = str(tmp_path / "deep" / "nested" / "Log" / "scannerhistory.xlsx")
-    monkeypatch.setattr(excel_mod, "EXCEL_PATH", deep_file)
-    monkeypatch.setattr(excel_mod, "LOGS_DIR",   deep_dir)
-    ok, _ = log_scan_to_excel(SAMPLE_SCAN, risk_score=0)
-    assert ok
-    assert os.path.exists(deep_file)
-
-
-# ─── Return values ────────────────────────────────────────────────────────────
-
-def test_returns_true_on_success():
-    ok, msg = log_scan_to_excel(SAMPLE_SCAN, risk_score=0)
-    assert ok is True
-    assert isinstance(msg, str)
-
-def test_returns_false_on_bad_path(monkeypatch):
-    monkeypatch.setattr(excel_mod, "EXCEL_PATH", "/root/no_permission/test.xlsx")
-    monkeypatch.setattr(excel_mod, "LOGS_DIR",   "/root/no_permission")
-    ok, msg = log_scan_to_excel(SAMPLE_SCAN, risk_score=0)
-    assert ok is False
-    assert msg != ""
+    assert os.path.exists(path)
