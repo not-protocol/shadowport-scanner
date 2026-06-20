@@ -1,13 +1,8 @@
 """
-reports.py — ShadowPort Scanner v2.1.0
+reports.py — ShadowPort Scanner v2.3.0
 Export scan results: TXT, JSON, XML, HTML.
-
-v2.1.0 additions:
-  - Partial scan flagged in all four formats
-  - Service KB notes embedded in HTML report
-  - All exceptions caught — never crashes
-  - Reports chmod 644 after write
-  - Silent error logging on failure
+Every saved report is logged to SQLite + JSON history.
+Never crashes — all exceptions caught and logged.
 """
 
 import json
@@ -15,15 +10,16 @@ import os
 import stat
 from datetime import datetime
 
-from config.settings import REPORTS_DIR, LOGS_DIR, TOOL_NAME, VERSION
-from output import print_success, print_error, print_info, print_warning
-from logger import log_error
+from config.settings import REPORTS_DIR, LOG_DIR, TOOL_NAME, VERSION
+from core.logger import log_error
+from core.json_history import record_report
+from db.database import log_report as db_log_report
 
 
-# ─── Directory setup ─────────────────────────────────────────────────────────
+# ── Directory setup ───────────────────────────────────────────────────────────
 
 def _ensure_dirs():
-    for d in (REPORTS_DIR, LOGS_DIR):
+    for d in (REPORTS_DIR, LOG_DIR):
         os.makedirs(d, exist_ok=True)
         try:
             mode = os.stat(d).st_mode
@@ -32,19 +28,19 @@ def _ensure_dirs():
             pass
 
 
-def _timestamp() -> str:
+def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
-def _host_safe(host: str) -> str:
+def _safe_host(host: str) -> str:
     return host.replace(".", "-").replace(":", "-").replace("/", "-")
 
 
-# ─── TXT ─────────────────────────────────────────────────────────────────────
+# ── TXT ───────────────────────────────────────────────────────────────────────
 
 def _build_txt(scan_data: dict) -> str:
-    sep     = "═" * 64
-    sep2    = "─" * 64
+    sep  = "═" * 64
+    sep2 = "─" * 64
     risk    = scan_data.get("risk", {})
     partial = scan_data.get("partial", False)
 
@@ -86,7 +82,7 @@ def _build_txt(scan_data: dict) -> str:
         for p in ports:
             lines.append(
                 "  "
-                + f"{p['port']}/{p.get('proto', 'tcp')}".ljust(col_p)
+                + f"{p['port']}/{p.get('proto','tcp')}".ljust(col_p)
                 + p.get("state", "").ljust(col_s)
                 + p.get("service", "").ljust(col_sv)
                 + p.get("version", "")[:col_v]
@@ -108,7 +104,7 @@ def _build_txt(scan_data: dict) -> str:
     return "\n".join(lines)
 
 
-# ─── HTML ─────────────────────────────────────────────────────────────────────
+# ── HTML ──────────────────────────────────────────────────────────────────────
 
 def _build_html(scan_data: dict) -> str:
     host       = scan_data.get("host", "N/A")
@@ -177,7 +173,8 @@ def _build_html(scan_data: dict) -> str:
   body{{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;padding:2rem}}
   h1{{color:var(--red);font-size:1.7rem;letter-spacing:3px;text-transform:uppercase;margin-bottom:.3rem}}
   .sub{{color:var(--cyan);font-size:.85rem;margin-bottom:2rem}}
-  .card{{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}}
+  .card{{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+         padding:1.5rem;margin-bottom:1.5rem}}
   .card h2{{color:var(--cyan);font-size:.9rem;letter-spacing:2px;text-transform:uppercase;
             margin-bottom:1rem;border-bottom:1px solid var(--border);padding-bottom:.5rem}}
   .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}}
@@ -284,25 +281,26 @@ def _build_html(scan_data: dict) -> str:
 </html>"""
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
-def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
+def save_report(scan_data: dict, fmt: str = "txt",
+                scan_id: int = None) -> str | None:
     """
-    Save scan in requested format. Returns filepath or None on failure.
-    Never raises — all errors caught and displayed clearly.
+    Save scan in requested format.
+    Logs result to SQLite reports_log and JSON history.
+    Returns filepath or None on failure.
     """
     try:
         _ensure_dirs()
     except Exception as exc:
-        print_error(f"Could not create reports directory: {exc}")
-        print_warning("Fix with: sudo chown -R $USER:$USER reports/ Log/")
+        log_error("reports", scan_data.get("host",""), str(exc), exc)
         return None
 
     fmt      = fmt.lower().strip()
-    ts       = _timestamp()
-    host_tag = _host_safe(scan_data.get("host", "unknown"))
-    filename = f"scan_{host_tag}_{ts}.{fmt}"
+    host_tag = _safe_host(scan_data.get("host", "unknown"))
+    filename = f"scan_{host_tag}_{_ts()}.{fmt}"
     filepath = os.path.join(REPORTS_DIR, filename)
+    target   = scan_data.get("host","")
 
     try:
         if fmt == "txt":
@@ -340,7 +338,7 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
                 f'  <host>\n'
                 f'    <address addr="{scan_data.get("host","")}" addrtype="ipv4"/>\n'
                 f'    <hostname>{scan_data.get("hostname","")}</hostname>\n'
-                f'    <status state="{scan_data.get("state","")}"/>\n'
+                f'    <status state="{scan_data.get("state","")}" />\n'
                 f'    <scan_mode>{scan_data.get("mode_name","")}</scan_mode>\n'
                 f'    <start_time>{scan_data.get("start_time","")}</start_time>\n'
                 f'    <end_time>{scan_data.get("end_time","")}</end_time>\n'
@@ -355,7 +353,7 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
             content = _build_html(scan_data)
 
         else:
-            print_error(f"Unknown format '{fmt}'. Choose: txt, json, xml, html")
+            log_error("reports", target, f"Unknown format: {fmt}")
             return None
 
         with open(filepath, "w", encoding="utf-8") as f:
@@ -366,64 +364,28 @@ def save_report(scan_data: dict, fmt: str = "txt") -> str | None:
         except PermissionError:
             pass
 
-        print_success(f"Report saved → {filepath}")
+        # Log to SQLite
+        try:
+            db_log_report(scan_id, target, fmt, filepath, success=True)
+        except Exception as exc:
+            log_error("reports", target, f"DB report log failed: {exc}", exc)
+
+        # Log to JSON history
+        try:
+            record_report(target, fmt, filepath)
+        except Exception as exc:
+            log_error("reports", target, f"JSON report log failed: {exc}", exc)
+
         return filepath
 
     except PermissionError as exc:
-        print_error("Report generation failed.")
-        print_error(f"Reason: Permission denied writing to {REPORTS_DIR}")
-        print_warning("Fix with: sudo chown -R $USER:$USER reports/")
-        log_error(
-            target=scan_data.get("host", ""),
-            mode="report",
-            error=str(exc),
-            exc=exc,
-        )
-        return None
-
-    except OSError as exc:
-        print_error(f"Report generation failed: {exc}")
-        log_error(
-            target=scan_data.get("host", ""),
-            mode="report",
-            error=str(exc),
-            exc=exc,
-        )
+        log_error("reports", target, str(exc), exc)
+        try:
+            db_log_report(scan_id, target, fmt, "", success=False)
+        except Exception:
+            pass
         return None
 
     except Exception as exc:
-        print_error(f"Report generation failed unexpectedly: {exc}")
-        log_error(
-            target=scan_data.get("host", ""),
-            mode="report",
-            error=str(exc),
-            exc=exc,
-        )
+        log_error("reports", target, str(exc), exc)
         return None
-
-
-def prompt_save(scan_data: dict):
-    """Prompt user to save a report and in which format."""
-    print()
-    try:
-        choice = input("  Save report? (y/n): ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return
-    if choice != "y":
-        return
-
-    print()
-    print_info("Choose format:")
-    print("    [1] TXT  — plain text")
-    print("    [2] JSON — machine-readable")
-    print("    [3] XML  — structured markup")
-    print("    [4] HTML — styled browser report  ★ recommended")
-    print()
-
-    try:
-        fc = input("  Format (1/2/3/4) [default: 1]: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return
-
-    fmt = {"1": "txt", "2": "json", "3": "xml", "4": "html", "": "txt"}.get(fc, "txt")
-    save_report(scan_data, fmt)
