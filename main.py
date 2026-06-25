@@ -34,10 +34,14 @@ from core.scanner_engine import validate_target, is_root, is_nmap_installed, run
 from core.logger import log_error
 from core.excel_logger import log_scan_to_excel, log_plugin_to_excel
 from core.json_history import record_scan, record_plugin, record_report, get_history
+from core.capture_engine import CaptureEngine
+from config.config_manager import ConfigManager
+from ui.theme_manager import ThemeManager
 from db.database import (
     init_db, save_scan, log_plugin, log_report,
     get_scan_history, get_plugin_history, get_report_history,
     get_error_history, get_stats,
+    log_capture, get_capture_history,
 )
 import plugins as plugin_loader
 
@@ -410,6 +414,86 @@ class PluginView(Vertical):
             pass
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Packet capture (v2.4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CaptureView(Vertical):
+    """Packet capture setup, live telemetry, and results table.
+
+    Mirrors DashboardView's status-bar/telemetry-log/results-table shape
+    and PluginView's "configure -> run -> stream output" flow, so it slots
+    into the existing page-switching model (display: block/none on a
+    sibling widget) instead of introducing a separate screen stack.
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="capture-input-row"):
+            yield Select(
+                [("eth0", "eth0"), ("lo", "lo"), ("wlan0", "wlan0")],
+                value="eth0",
+                id="capture-interface-select",
+            )
+            yield Input(placeholder="BPF filter, e.g. tcp port 443", id="capture-filter-input")
+            yield Input(placeholder="Duration (s), 0 = until Stop", id="capture-duration-input", value="60")
+            yield Button("▶  Start", id="capture-start-btn", variant="success")
+            yield Button("■  Stop",  id="capture-stop-btn",  variant="error")
+
+        with Horizontal(id="capture-status-bar"):
+            yield Static("Interface", classes="status-cell")
+            yield Static("—",         classes="status-cell status-val", id="cap-interface")
+            yield Static("Packets",   classes="status-cell")
+            yield Static("0",         classes="status-cell status-val", id="cap-packets")
+            yield Static("Status",    classes="status-cell")
+            yield Static("Idle",      classes="status-cell status-val", id="cap-status")
+            yield Static("Elapsed",   classes="status-cell")
+            yield Static("00:00",     classes="status-cell status-val", id="cap-elapsed")
+
+        yield Log(id="capture-telemetry-log", auto_scroll=True)
+
+        with Container(id="capture-results-panel", classes="panel"):
+            yield DataTable(id="capture-packet-table", zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        tbl = self.query_one("#capture-packet-table", DataTable)
+        tbl.add_columns("No.", "Time", "Source", "Dest", "Protocol", "Length", "Info")
+
+    def populate_interfaces(self, interfaces: list[tuple[str, str]]) -> None:
+        if not interfaces:
+            return
+        select = self.query_one("#capture-interface-select", Select)
+        select.set_options(interfaces)
+
+    def write_output(self, text: str) -> None:
+        try:
+            log = self.query_one("#capture-telemetry-log", Log)
+            log.write_line(text)
+        except NoMatches:
+            pass
+
+    def set_status(self, interface: str, packets: str, status: str, elapsed: str) -> None:
+        try:
+            self.query_one("#cap-interface", Static).update(interface)
+            self.query_one("#cap-packets",   Static).update(packets)
+            self.query_one("#cap-status",    Static).update(status)
+            self.query_one("#cap-elapsed",   Static).update(elapsed)
+        except NoMatches:
+            pass
+
+    def reset_packet_table(self) -> None:
+        try:
+            self.query_one("#capture-packet-table", DataTable).clear()
+        except NoMatches:
+            pass
+
+    def add_packet_row(self, no: str, time_s: str, src: str, dst: str,
+                       proto: str, length: str, info: str) -> None:
+        try:
+            tbl = self.query_one("#capture-packet-table", DataTable)
+            tbl.add_row(no, time_s, src, dst, proto, length, info[:60])
+        except NoMatches:
+            pass
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Database viewer
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -643,6 +727,7 @@ class ShadowPortApp(App):
                 yield Static(f"[bold #00cfff]☠ ShadowPort[/]\n[dim]v{VERSION}[/]\n")
                 yield Button("◉  Dashboard",  id="nav-dashboard",  classes="nav-btn active")
                 yield Button("⊙  Plugins",    id="nav-plugins",    classes="nav-btn")
+                yield Button("⊙  Capture",    id="nav-capture",    classes="nav-btn")
                 yield Button("⊙  Reports",    id="nav-reports",    classes="nav-btn")
                 yield Button("⊙  History",    id="nav-history",    classes="nav-btn")
                 yield Button("⊙  Database",   id="nav-database",   classes="nav-btn")
@@ -654,6 +739,7 @@ class ShadowPortApp(App):
             with Container(id="main-area"):
                 yield DashboardView(id="page-dashboard")
                 yield PluginView(self._plugin_registry, id="page-plugins")
+                yield CaptureView(id="page-capture")
                 yield ReportsView(id="page-reports")
                 yield HistoryView(id="page-history")
                 yield DatabaseView(id="page-database")
@@ -665,6 +751,15 @@ class ShadowPortApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        # v2.4 — persistent config + theme restoration. Done first so the
+        # saved theme is visible from the very first frame, before the
+        # hardcoded CSS defaults would otherwise be what's on screen.
+        self.config_manager = ConfigManager()
+        self.theme_manager = ThemeManager(self, self.config_manager)
+        self.theme_manager.apply_saved_theme()
+        self._capture_engine: Optional[CaptureEngine] = None
+        self._capture_start_ts: float = 0.0
+
         # Init DB
         try:
             init_db()
@@ -695,7 +790,7 @@ class ShadowPortApp(App):
 
     # ── Page navigation ───────────────────────────────────────────────────────
 
-    _PAGES = ["dashboard","plugins","reports","history","database","system","settings","help"]
+    _PAGES = ["dashboard","plugins","capture","reports","history","database","system","settings","help"]
 
     def _show_page(self, name: str) -> None:
         for page in self._PAGES:
@@ -730,6 +825,8 @@ class ShadowPortApp(App):
                 self.query_one("#page-reports", ReportsView).load_reports()
             except NoMatches:
                 pass
+        elif name == "capture":
+            self._load_capture_interfaces()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:  # noqa: C901
         bid = event.button.id or ""
@@ -737,6 +834,7 @@ class ShadowPortApp(App):
         # Navigation
         nav_map = {
             "nav-dashboard": "dashboard", "nav-plugins":  "plugins",
+            "nav-capture":   "capture",
             "nav-reports":   "reports",   "nav-history":  "history",
             "nav-database":  "database",  "nav-system":   "system",
             "nav-settings":  "settings",  "nav-help":     "help",
@@ -748,7 +846,7 @@ class ShadowPortApp(App):
         # Theme buttons
         if bid.startswith("theme-"):
             theme_key = bid[len("theme-"):]
-            self._apply_theme(theme_key)
+            self.theme_manager.switch(theme_key)
             return
 
         # Scan
@@ -766,6 +864,15 @@ class ShadowPortApp(App):
         # Plugin run
         if bid == "run-plugin-btn":
             self._run_plugin()
+            return
+
+        # Packet capture (v2.4)
+        if bid == "capture-start-btn":
+            self._start_capture()
+            return
+
+        if bid == "capture-stop-btn":
+            self._stop_capture()
             return
 
     # ── Scan workflow ─────────────────────────────────────────────────────────
@@ -983,6 +1090,194 @@ class ShadowPortApp(App):
         status = "success" if success else "error"
         self._toast(f"Plugin {name}: {'done' if success else 'failed'}", status)
 
+    # ── Packet capture workflow (v2.4) ──────────────────────────────────────
+
+    def _load_capture_interfaces(self) -> None:
+        """Populate the interface Select via `tshark -D`, off the main thread."""
+        def _worker():
+            import re
+            import shutil as shutil_mod
+            import subprocess as subprocess_mod
+
+            if shutil_mod.which("tshark") is None:
+                self.app.call_from_thread(
+                    self._on_interfaces_failed,
+                    "tshark not found — install wireshark-cli (see README)",
+                )
+                return
+            try:
+                result = subprocess_mod.run(
+                    ["tshark", "-D"], shell=False, capture_output=True,
+                    text=True, timeout=10,
+                )
+            except (FileNotFoundError, subprocess_mod.TimeoutExpired) as e:
+                self.app.call_from_thread(self._on_interfaces_failed, str(e))
+                return
+
+            if result.returncode != 0:
+                self.app.call_from_thread(
+                    self._on_interfaces_failed, result.stderr.strip() or "tshark -D failed"
+                )
+                return
+
+            interfaces = []
+            for raw_line in result.stdout.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                stripped = re.sub(r"^\d+\.\s*", "", line)
+                if not stripped:
+                    continue
+                name = stripped.split()[0]
+                interfaces.append((name, stripped))
+
+            self.app.call_from_thread(self._on_interfaces_loaded, interfaces)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_interfaces_failed(self, message: str) -> None:
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.write_output(f"[ERROR] {message}")
+        except NoMatches:
+            pass
+        log_error("capture", "", message)
+
+    def _on_interfaces_loaded(self, interfaces: list[tuple[str, str]]) -> None:
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.populate_interfaces(interfaces)
+        except NoMatches:
+            pass
+
+    def _start_capture(self) -> None:
+        if self._capture_engine is not None:
+            self._toast("A capture is already running.", "warn")
+            return
+
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            interface = str(self.query_one("#capture-interface-select", Select).value)
+            bpf_filter = self.query_one("#capture-filter-input", Input).value.strip()
+            duration_raw = self.query_one("#capture-duration-input", Input).value.strip() or "0"
+        except NoMatches:
+            return
+
+        try:
+            duration = int(duration_raw)
+            if duration < 0:
+                raise ValueError
+        except ValueError:
+            self._toast("Duration must be a non-negative integer.", "error")
+            return
+
+        try:
+            engine = CaptureEngine(
+                interface=interface, bpf_filter=bpf_filter, duration=duration,
+                on_event=self._on_capture_event,
+            )
+        except ValueError as e:
+            self._toast(f"Invalid interface: {e}", "error")
+            return
+
+        self._capture_engine = engine
+        self._capture_start_ts = time.time()
+
+        cv.reset_packet_table()
+        cv.write_output(f"[{datetime.now().strftime('%H:%M:%S')}] Starting capture on {interface}…")
+        cv.set_status(interface, "0", "Running", "00:00")
+
+        try:
+            engine.start()
+        except RuntimeError as e:
+            cv.write_output(f"[ERROR] {e}")
+            self._capture_engine = None
+            return
+
+        threading.Thread(target=self._capture_tick, daemon=True).start()
+        self.config_manager.set("capture_interface", interface)
+        self.config_manager.set("capture_filter", bpf_filter)
+        self.config_manager.set("capture_duration", duration)
+        self.config_manager.save()
+
+    def _capture_tick(self) -> None:
+        while self._capture_engine is not None:
+            engine = self._capture_engine
+            elapsed = int(time.time() - self._capture_start_ts)
+            mm, ss = elapsed // 60, elapsed % 60
+            try:
+                count = engine.get_packet_count()
+            except Exception:
+                count = "—"
+            self.app.call_from_thread(
+                self._update_capture_status, engine.interface, str(count),
+                "Running" if engine.status == "running" else engine.status.capitalize(),
+                f"{mm:02d}:{ss:02d}",
+            )
+            if engine.status in ("stopped", "failed"):
+                self.app.call_from_thread(self._on_capture_finished)
+                break
+            time.sleep(0.5)
+
+    def _update_capture_status(self, interface: str, packets: str,
+                               status: str, elapsed: str) -> None:
+        try:
+            self.query_one("#page-capture", CaptureView).set_status(
+                interface, packets, status, elapsed
+            )
+        except NoMatches:
+            pass
+
+    def _on_capture_event(self, level: str, message: str) -> None:
+        self.app.call_from_thread(self._write_capture_event, level, message)
+
+    def _write_capture_event(self, level: str, message: str) -> None:
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.write_output(f"[{level}] {message}")
+        except NoMatches:
+            pass
+
+    def _stop_capture(self) -> None:
+        if self._capture_engine is None:
+            self._toast("No capture running.", "warn")
+            return
+        self._capture_engine.stop()
+
+    def _on_capture_finished(self) -> None:
+        engine = self._capture_engine
+        if engine is None:
+            return
+
+        elapsed = time.time() - self._capture_start_ts
+        try:
+            cap_id = log_capture(
+                interface=engine.interface, bpf_filter=engine.bpf_filter,
+                display_filter="", duration=elapsed,
+                packet_count=engine.get_packet_count(),
+                filepath=engine.output_file, status=engine.status,
+            )
+        except Exception as e:
+            cap_id = None
+            log_error("capture", engine.interface, "DB log_capture failed", e)
+
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.write_output(
+                f"[DONE] Capture saved — {engine.get_packet_count()} packets, "
+                f"{engine.output_file}"
+            )
+        except NoMatches:
+            pass
+
+        self._toast(
+            f"Capture {'complete' if engine.status == 'stopped' else 'failed'} — "
+            f"{engine.get_packet_count()} packet(s)",
+            "success" if engine.status == "stopped" else "error",
+        )
+
+        self._capture_engine = None
+
     def _get_last_scan_id(self) -> Optional[int]:
         history = get_scan_history(1)
         return history[0]["id"] if history else None
@@ -1033,14 +1328,15 @@ class ShadowPortApp(App):
         except NoMatches:
             pass
 
-    def _apply_theme(self, theme_key: str) -> None:
+    def _apply_theme(self, theme_key: str, silent: bool = False) -> None:
         from ui.themes import THEMES, THEME_LABELS
         if theme_key not in THEMES:
             return
         colors = THEMES[theme_key]
         for var, val in colors.items():
             self.styles.__dict__[var] = val
-        self._toast(f"Theme: {THEME_LABELS.get(theme_key, theme_key)}")
+        if not silent:
+            self._toast(f"Theme: {THEME_LABELS.get(theme_key, theme_key)}")
 
     # ── Key bindings ─────────────────────────────────────────────────────────
 
