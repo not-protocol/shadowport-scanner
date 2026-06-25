@@ -1,4 +1,4 @@
-# ShadowPort Scanner v2.3.0 — Python dependencies
+# ShadowPort Scanner v2.4.0 — Python dependencies
 # Install with:
 #   sudo pip install -r requirements.txt --break-system-packages
 
@@ -9,3 +9,10 @@ openpyxl>=3.1.2
 
 pytest>=8.0.0
 pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+pytest-asyncio>=0.23.0
+
+# Optional — only needed for deeper post-capture .pcapng parsing/analysis.
+# Core packet capture (start/stop, live packet count) only needs the
+# tshark OS binary, installed separately — see README "Packet Capture".
+# pyshark>=0.6
