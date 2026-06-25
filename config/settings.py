@@ -15,8 +15,9 @@ DB_PATH     = os.path.join(LOG_DIR, "shadowport.db")
 ERROR_LOG   = os.path.join(LOG_DIR, "error.log")
 EXCEL_PATH  = os.path.join(LOG_DIR, "scannerhistory.xlsx")
 JSON_HIST   = os.path.join(LOG_DIR, "history.json")
+CAPTURES_DIR = os.path.join(LOG_DIR, "captures")  # v2.4 — packet capture files
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5  # v2.4: adds the `captures` table for packet-capture history
 
 SCAN_MODES = {
     "1": {"name": "Quick Scan",        "args": "",              "description": "Top 1000 ports",          "eta": 15,  "timeout": 60,  "root": False},
@@ -69,3 +70,8 @@ THEMES = {
     "light_mode":  "light",
 }
 DEFAULT_THEME = "cyber_green"
+
+# ── Packet Capture (v2.4) ────────────────────────────────────────────────────
+DEFAULT_CAPTURE_INTERFACE = "eth0"
+DEFAULT_CAPTURE_FILTER    = ""
+DEFAULT_CAPTURE_DURATION  = 60
