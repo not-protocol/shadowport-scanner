@@ -93,8 +93,11 @@ shadowport-v2.4.0/
 ```
 ---
 
-![assets](https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011228.png)
-
+<p align="center">
+  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011228.png" width="32%">
+  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011257.png" width="32%">
+  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011320.png" width="32%">
+</p>
 
 ---
 
