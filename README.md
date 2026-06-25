@@ -91,6 +91,10 @@ shadowport-v2.4.0/
 ├── reports/                         # Auto-created
 └── requirements.txt
 ```
+---
+
+![assets](https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011228.png)
+
 
 ---
 
