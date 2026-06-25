@@ -105,6 +105,25 @@ CREATE TABLE IF NOT EXISTS scan_statistics (
 );
 """
 
+# v2.4 — packet capture history (TShark)
+_CREATE_CAPTURES = """
+CREATE TABLE IF NOT EXISTS captures (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT    NOT NULL DEFAULT (datetime('now')),
+    interface        TEXT    NOT NULL DEFAULT '',
+    bpf_filter       TEXT    NOT NULL DEFAULT '',
+    display_filter   TEXT    NOT NULL DEFAULT '',
+    duration_seconds REAL    NOT NULL DEFAULT 0.0,
+    packet_count     INTEGER NOT NULL DEFAULT 0,
+    file_path        TEXT    NOT NULL DEFAULT '',
+    status           TEXT    NOT NULL DEFAULT 'unknown'
+);
+"""
+
+_CREATE_CAPTURES_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_captures_timestamp ON captures(timestamp);
+"""
+
 _CREATE_SCHEMA_META = """
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -154,7 +173,8 @@ def migrate_schema() -> list[str]:
     with _db_lock, _conn() as con:
         con.execute(_CREATE_SCHEMA_META)
         for ddl in [_CREATE_SCANS, _CREATE_PORTS, _CREATE_PLUGINS_LOG,
-                    _CREATE_REPORTS_LOG, _CREATE_ERRORS_LOG, _CREATE_SCAN_STATISTICS]:
+                    _CREATE_REPORTS_LOG, _CREATE_ERRORS_LOG, _CREATE_SCAN_STATISTICS,
+                    _CREATE_CAPTURES, _CREATE_CAPTURES_INDEX]:
             con.execute(ddl)
 
         existing = {
@@ -239,6 +259,22 @@ def log_report(scan_id: Optional[int], target: str,
             (scan_id, target, fmt, filepath, 1 if success else 0),
         )
 
+# ── Capture log (v2.4) ───────────────────────────────────────────────────────
+
+def log_capture(interface: str, bpf_filter: str, display_filter: str,
+                duration: float, packet_count: int,
+                filepath: str, status: str) -> int:
+    with _db_lock, _conn() as con:
+        cur = con.execute(
+            """INSERT INTO captures
+               (interface,bpf_filter,display_filter,duration_seconds,
+                packet_count,file_path,status)
+               VALUES(?,?,?,?,?,?,?)""",
+            (interface, bpf_filter, display_filter, float(duration),
+             int(packet_count), str(filepath), status),
+        )
+        return cur.lastrowid
+
 # ── Error log ─────────────────────────────────────────────────────────────────
 
 def log_db_error(module: str, target: str, message: str, tb: str = "") -> None:
@@ -286,6 +322,13 @@ def get_report_history(limit: int = 50) -> list[dict]:
         ).fetchall()
     return [dict(r) for r in rows]
 
+def get_capture_history(limit: int = 50) -> list[dict]:
+    with _db_lock, _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM captures ORDER BY timestamp DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
 def get_error_history(limit: int = 50) -> list[dict]:
     with _db_lock, _conn() as con:
         rows = con.execute(
@@ -307,6 +350,7 @@ def get_stats() -> dict:
         plugins  = con.execute("SELECT COUNT(*) FROM plugins_log").fetchone()[0]
         reports  = con.execute("SELECT COUNT(*) FROM reports_log").fetchone()[0]
         errors   = con.execute("SELECT COUNT(*) FROM errors_log").fetchone()[0]
+        captures = con.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
         avg_dur  = con.execute("SELECT AVG(duration) FROM scans").fetchone()[0] or 0.0
         avg_open = con.execute("SELECT AVG(open_ports) FROM scans").fetchone()[0] or 0.0
         avg_risk = con.execute("SELECT AVG(risk_score) FROM scans").fetchone()[0] or 0.0
@@ -320,6 +364,7 @@ def get_stats() -> dict:
         "total_plugins":  plugins,
         "total_reports":  reports,
         "total_errors":   errors,
+        "total_captures": captures,
         "avg_duration_s": round(avg_dur, 1),
         "avg_open_ports": round(avg_open, 1),
         "avg_risk_score": round(avg_risk, 1),
