@@ -30,3 +30,96 @@
 - `tests/test_config_manager.py` — 7 cases covering defaults sourced from `config/settings.py`, corrupt-JSON recovery, atomic save (no leftover `.tmp` files), and round-trips.
 - `tests/test_theme_manager.py` — 7 cases covering startup restoration (silent), manual switching (toasts + persists), invalid-key handling, and label lookup.
 - `tests/test_database_capture.py` — 9 cases covering insert/query, ordering, limits, `pathlib.Path` filepath coercion, a live SQL-injection probe, `get_stats()` integration, and migrating a simulated real v2.3 database forward to v2.5 schema.
+
+## [2.4.1] - 2026-06-26
+
+### Changed — Wireshark-style Capture UI
+- Rebuilt the Capture page filter row from a single free-text BPF box into
+  structured fields: Interface select, Protocol select (Any/TCP/UDP/DNS/
+  HTTP/HTTPS/ICMP), Port input, and IP/host input. `CaptureView.build_bpf_filter()`
+  translates these into a real BPF expression (e.g. picking "DNS" with no
+  port maps to `udp port 53`, the actual underlying primitive — `dns` is not
+  itself a BPF keyword). A live preview line shows the generated filter
+  before you start a capture.
+- Packet list grid is now genuinely populated after each capture (previously
+  `add_packet_row()` existed but was never called) — `ShadowPortApp._load_packet_rows()`
+  runs `tshark -r <file> -T fields ...` on a background thread and streams
+  rows back via `call_from_thread`, matching every other worker in this file.
+- Packet rows are colored by protocol (TCP/UDP/DNS/HTTP/TLS/ICMP/ARP), each
+  built as a `rich.text.Text` object per cell — matching Textual's documented
+  `DataTable` per-cell-styling mechanism (there is no CSS-level per-row hook).
+- Added a packet **detail pane** below the grid: clicking a row (`cursor_type="row"`,
+  `on_data_table_row_selected`) shows its full Time/Source/Destination/Protocol/
+  Length/Info in an expanded view, looked up by row key rather than re-parsing
+  the (now color-styled) displayed cell text.
+- Port/IP fields are validated with the same discipline as
+  `core.scanner_engine.validate_target` (shell-metacharacter and non-ASCII
+  rejection), scoped to what a BPF `host`/`port` filter actually accepts.
+- Protocol/port/IP/duration are now persisted via `ConfigManager` (new keys:
+  `capture_protocol`, `capture_port`, `capture_ip`) and restored into the
+  filter row on next launch — previously these fields were write-only in
+  config and never read back to pre-fill the UI.
+- Reorganized the filter row into two stacked rows (filter fields, then
+  duration+controls) instead of cramming 7 widgets into one row — at a
+  minimum 80-column terminal the single-row version left ~0 width for the
+  busiest field.
+
+### Fixed
+- The original v2.4.0 Capture page CSS had no sizing rules at all for its
+  input row, so the filter `Input`'s default greedy width pushed the
+  Start/Stop buttons off-screen on most terminals. Every widget in both new
+  rows now has an explicit width (fixed for selects/buttons, `1fr` only for
+  the IP field, which benefits most from the room).
+- Start/Stop button visibility now actually toggles based on capture state
+  (`_toggle_capture_buttons`), matching the existing `_toggle_scan_buttons`
+  pattern — previously both buttons were always visible regardless of
+  whether a capture was running.
+
+### Dependencies
+- Added `rich>=13.6.0` explicitly to `requirements.txt`. It was always a
+  transitive dependency of `textual`, but v2.4.1 imports `rich.text.Text`
+  directly for the colored packet cells, so it's now declared rather than
+  relied on implicitly.
+
+### Tests
+- `tests/test_capture_view_filters.py` — 27 cases covering `build_bpf_filter`
+  (11), `validate_ip_field` (8), `validate_port_field` (8), and
+  `_color_for_protocol` (5). Since `CaptureView` subclasses Textual's
+  `Vertical` and importing it requires `textual`, these tests extract the
+  literal method source from `main.py` via `ast` and `exec` it against a
+  lightweight fake `self.query_one(...)` harness — testing the exact bytes
+  shipped, not a hand-copied reimplementation, while staying runnable
+  without `textual` installed.
+- `tests/test_config_manager.py` — added `test_structured_capture_fields_roundtrip`
+  and extended `test_defaults_match_settings` to cover the three new
+  `capture_protocol`/`capture_port`/`capture_ip` keys.
+
+## [2.4.2] - 2026-06-27
+
+### Fixed — Capture page crash on startup
+- **`InvalidSelectValueError: Illegal select value 'any'.`** Textual's
+  `Select` widget takes options as `(label, value)` tuples — the displayed
+  text first, the actual stored value second. `CaptureView.PROTOCOL_OPTIONS`
+  was built backwards as `(value, label)` (e.g. `("any", "Any")`), so the
+  constructor's `value="any"` was checked against the *labels*
+  (`"Any"`, `"TCP"`, ...) instead of the values, and never matched — crashing
+  on mount every time. Swapped to `("Any", "any")`, `("TCP", "tcp")`, etc.
+- Same backwards-tuple mistake existed in `_load_capture_interfaces()`'s
+  worker (`interfaces.append((name, stripped))` — bare interface name first,
+  full description second). This didn't crash immediately because the
+  *initial* hardcoded list (`[("eth0","eth0"), ...]`) has identical
+  label/value strings, masking the bug — but once real `tshark -D` output
+  populated the dropdown, `Select.value` would have returned the full
+  description string (e.g. `"eth0 (Ethernet)"`) instead of the bare
+  interface name, which would then fail `CaptureEngine`'s interface
+  allow-list regex. Swapped to `(stripped, name)`.
+- `CaptureView.prefill()`'s `valid_keys = {key for key, _ in PROTOCOL_OPTIONS}`
+  unpacked the wrong tuple position after the first fix above — it would
+  have collected the capitalized *labels* instead of the lowercase *values*,
+  silently breaking saved-protocol restoration on startup (no crash, just
+  a feature regression). Fixed to unpack the value: `{value for _, value in
+  PROTOCOL_OPTIONS}`.
+- Audited every other `Select(...)`/`set_options(...)` call site in
+  `main.py` (`mode-select`, `plugin-select`) — both were already correct in
+  the original v2.3 codebase (`(label, value)` order); the bug was isolated
+  to the three spots above, all introduced in the v2.4 Capture rebuild.
