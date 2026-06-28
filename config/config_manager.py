@@ -22,6 +22,9 @@ from config.settings import (
     DEFAULT_CAPTURE_INTERFACE,
     DEFAULT_CAPTURE_FILTER,
     DEFAULT_CAPTURE_DURATION,
+    DEFAULT_CAPTURE_PROTOCOL,
+    DEFAULT_CAPTURE_PORT,
+    DEFAULT_CAPTURE_IP,
 )
 
 
@@ -45,6 +48,9 @@ class ConfigManager:
         "capture_interface": DEFAULT_CAPTURE_INTERFACE,
         "capture_filter": DEFAULT_CAPTURE_FILTER,
         "capture_duration": DEFAULT_CAPTURE_DURATION,
+        "capture_protocol": DEFAULT_CAPTURE_PROTOCOL,
+        "capture_port": DEFAULT_CAPTURE_PORT,
+        "capture_ip": DEFAULT_CAPTURE_IP,
     }
 
     def __init__(self) -> None:

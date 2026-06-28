@@ -73,5 +73,8 @@ DEFAULT_THEME = "cyber_green"
 
 # ── Packet Capture (v2.4) ────────────────────────────────────────────────────
 DEFAULT_CAPTURE_INTERFACE = "eth0"
-DEFAULT_CAPTURE_FILTER    = ""
+DEFAULT_CAPTURE_FILTER    = ""     # legacy raw-BPF key, kept for back-compat
 DEFAULT_CAPTURE_DURATION  = 60
+DEFAULT_CAPTURE_PROTOCOL  = "any"
+DEFAULT_CAPTURE_PORT      = ""
+DEFAULT_CAPTURE_IP        = ""

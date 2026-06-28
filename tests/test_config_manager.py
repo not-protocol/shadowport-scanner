@@ -27,6 +27,22 @@ def test_defaults_match_settings():
     assert ConfigManager.DEFAULTS["theme"] == s.DEFAULT_THEME
     assert ConfigManager.DEFAULTS["capture_interface"] == s.DEFAULT_CAPTURE_INTERFACE
     assert ConfigManager.DEFAULTS["capture_duration"] == s.DEFAULT_CAPTURE_DURATION
+    assert ConfigManager.DEFAULTS["capture_protocol"] == s.DEFAULT_CAPTURE_PROTOCOL
+    assert ConfigManager.DEFAULTS["capture_port"] == s.DEFAULT_CAPTURE_PORT
+    assert ConfigManager.DEFAULTS["capture_ip"] == s.DEFAULT_CAPTURE_IP
+
+def test_structured_capture_fields_roundtrip():
+    """Protocol/port/IP fields (Wireshark-style filter UI) must persist."""
+    cm = ConfigManager()
+    cm.set("capture_protocol", "tcp")
+    cm.set("capture_port", "443")
+    cm.set("capture_ip", "192.168.1.1")
+    cm.save()
+
+    cm2 = ConfigManager()
+    assert cm2.get("capture_protocol") == "tcp"
+    assert cm2.get("capture_port") == "443"
+    assert cm2.get("capture_ip") == "192.168.1.1"
 
 def test_load_recovers_from_corrupt_json():
     ConfigManager.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
