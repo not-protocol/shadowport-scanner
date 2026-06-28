@@ -18,6 +18,8 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+from rich.text import Text
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
@@ -128,6 +130,90 @@ Screen {
     color: #ff4455;
     border: solid #ff4455;
     display: none;
+}
+
+/* ── Capture input area (v2.4) ── */
+#capture-filter-row {
+    layout: horizontal;
+    height: 5;
+    margin: 1 1 0 1;
+}
+#capture-interface-select {
+    width: 14;
+    background: #0d1929;
+    border: solid #1e3a5f;
+    color: #c9d1e0;
+}
+#capture-protocol-select {
+    width: 12;
+    background: #0d1929;
+    border: solid #1e3a5f;
+    color: #c9d1e0;
+}
+#capture-port-input {
+    width: 10;
+    background: #0d1929;
+    border: solid #1e3a5f;
+    color: #c9d1e0;
+}
+#capture-ip-input {
+    width: 1fr;
+    background: #0d1929;
+    border: solid #1e3a5f;
+    color: #c9d1e0;
+}
+#capture-controls-row {
+    layout: horizontal;
+    height: 5;
+    margin: 0 1 1 1;
+}
+#capture-duration-input {
+    width: 1fr;
+    background: #0d1929;
+    border: solid #1e3a5f;
+    color: #c9d1e0;
+}
+#capture-start-btn {
+    width: 14;
+    background: #1e3a5f;
+    color: #00ff88;
+    border: solid #00ff88;
+}
+#capture-start-btn:hover { background: #00ff88; color: #0a0e1a; }
+#capture-stop-btn {
+    width: 14;
+    background: #1e3a5f;
+    color: #ff4455;
+    border: solid #ff4455;
+    display: none;
+}
+#capture-stop-btn:hover { background: #ff4455; color: #0a0e1a; }
+#capture-filter-preview {
+    color: #607090;
+    margin: 0 1;
+    height: 1;
+}
+#capture-setup-error {
+    color: #ff4455;
+    margin: 0 1;
+    height: 1;
+}
+#capture-results-panel {
+    height: 14;
+    margin: 1;
+}
+#capture-detail-panel {
+    height: 9;
+    margin: 0 1 1 1;
+    padding: 1;
+}
+#capture-detail-text {
+    color: #c9d1e0;
+}
+#capture-telemetry-log {
+    height: 8;
+    margin: 0 1 1 1;
+    border: solid #1e3a5f;
 }
 
 /* ── Status bar ── */
@@ -418,7 +504,8 @@ class PluginView(Vertical):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CaptureView(Vertical):
-    """Packet capture setup, live telemetry, and results table.
+    """Wireshark-style packet capture: structured filter row, colored
+    packet-list grid, and a detail pane for the selected packet.
 
     Mirrors DashboardView's status-bar/telemetry-log/results-table shape
     and PluginView's "configure -> run -> stream output" flow, so it slots
@@ -426,17 +513,45 @@ class CaptureView(Vertical):
     sibling widget) instead of introducing a separate screen stack.
     """
 
+    PROTOCOL_OPTIONS = [
+        ("Any",   "any"),
+        ("TCP",   "tcp"),
+        ("UDP",   "udp"),
+        ("DNS",   "dns"),
+        ("HTTP",  "http"),
+        ("HTTPS", "https"),
+        ("ICMP",  "icmp"),
+    ]
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Per-row packet detail, keyed by the same string key passed to
+        # add_row(..., key=...) — looked up on row selection rather than
+        # re-parsing the rendered (and color-styled) cell text.
+        self._packet_details: dict[str, dict[str, str]] = {}
+
     def compose(self) -> ComposeResult:
-        with Horizontal(id="capture-input-row"):
+        with Horizontal(id="capture-filter-row"):
             yield Select(
                 [("eth0", "eth0"), ("lo", "lo"), ("wlan0", "wlan0")],
                 value="eth0",
                 id="capture-interface-select",
             )
-            yield Input(placeholder="BPF filter, e.g. tcp port 443", id="capture-filter-input")
-            yield Input(placeholder="Duration (s), 0 = until Stop", id="capture-duration-input", value="60")
+            yield Select(
+                self.PROTOCOL_OPTIONS,
+                value="any",
+                id="capture-protocol-select",
+            )
+            yield Input(placeholder="Port", id="capture-port-input")
+            yield Input(placeholder="IP / host", id="capture-ip-input")
+
+        with Horizontal(id="capture-controls-row"):
+            yield Input(placeholder="Duration (s), 0=until Stop", id="capture-duration-input", value="60")
             yield Button("▶  Start", id="capture-start-btn", variant="success")
             yield Button("■  Stop",  id="capture-stop-btn",  variant="error")
+
+        yield Static("", id="capture-filter-preview")
+        yield Static("", id="capture-setup-error")
 
         with Horizontal(id="capture-status-bar"):
             yield Static("Interface", classes="status-cell")
@@ -448,14 +563,109 @@ class CaptureView(Vertical):
             yield Static("Elapsed",   classes="status-cell")
             yield Static("00:00",     classes="status-cell status-val", id="cap-elapsed")
 
-        yield Log(id="capture-telemetry-log", auto_scroll=True)
-
         with Container(id="capture-results-panel", classes="panel"):
-            yield DataTable(id="capture-packet-table", zebra_stripes=True)
+            yield DataTable(id="capture-packet-table", zebra_stripes=True, cursor_type="row")
+
+        with Container(id="capture-detail-panel", classes="panel"):
+            yield Static("Select a packet to see details", id="capture-detail-text")
+
+        yield Log(id="capture-telemetry-log", auto_scroll=True)
 
     def on_mount(self) -> None:
         tbl = self.query_one("#capture-packet-table", DataTable)
         tbl.add_columns("No.", "Time", "Source", "Dest", "Protocol", "Length", "Info")
+        self._update_filter_preview()
+
+    # ── Filter row -> BPF filter string ─────────────────────────────────────
+
+    # BPF building blocks per protocol: (bpf_prefix, default_port_or_None).
+    # "dns"/"http"/"https" aren't real BPF primitives by themselves — DNS is
+    # conventionally udp/53, HTTP tcp/80, HTTPS tcp/443 — so each maps to the
+    # underlying transport-layer primitive tshark/tcpdump actually understand.
+    _PROTOCOL_BPF = {
+        "any":   (None, None),
+        "tcp":   ("tcp", None),
+        "udp":   ("udp", None),
+        "dns":   ("udp", 53),
+        "http":  ("tcp", 80),
+        "https": ("tcp", 443),
+        "icmp":  ("icmp", None),
+    }
+
+    def build_bpf_filter(self) -> str:
+        """Build a BPF filter string from the protocol/port/IP fields.
+
+        Returns:
+            A BPF expression like "tcp port 443 and host 10.0.0.1", or ""
+            if every field is at its "any" / blank default.
+        """
+        try:
+            protocol = str(self.query_one("#capture-protocol-select", Select).value)
+            port = self.query_one("#capture-port-input", Input).value.strip()
+            ip = self.query_one("#capture-ip-input", Input).value.strip()
+        except NoMatches:
+            return ""
+
+        proto_prefix, default_port = self._PROTOCOL_BPF.get(protocol, (None, None))
+        effective_port = port or (str(default_port) if default_port else "")
+
+        parts = []
+        if protocol == "icmp":
+            parts.append("icmp")
+        elif proto_prefix:
+            parts.append(f"{proto_prefix} port {effective_port}" if effective_port else proto_prefix)
+        elif effective_port:
+            parts.append(f"port {effective_port}")
+
+        if ip:
+            parts.append(f"host {ip}")
+
+        return " and ".join(parts)
+
+    def _update_filter_preview(self) -> None:
+        try:
+            preview = self.query_one("#capture-filter-preview", Static)
+        except NoMatches:
+            return
+        bpf = self.build_bpf_filter()
+        preview.update(f"Filter: {bpf}" if bpf else "Filter: (capture all traffic)")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "capture-protocol-select":
+            self._update_filter_preview()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id in ("capture-port-input", "capture-ip-input"):
+            self._update_filter_preview()
+
+    # ── Validation (mirrors core.scanner_engine.validate_target's discipline,
+    #    scoped to what a BPF "host"/"port" filter actually accepts) ─────────
+
+    _SHELL_CHARS = set(";|&`$()<>\n\r")
+
+    def validate_ip_field(self, value: str) -> tuple[bool, str]:
+        t = value.strip()
+        if not t:
+            return True, ""
+        if any(c in t for c in self._SHELL_CHARS) or " " in t:
+            return False, "IP/host contains illegal characters."
+        try:
+            t.encode("ascii")
+        except UnicodeEncodeError:
+            return False, "IP/host must be ASCII."
+        return True, ""
+
+    def validate_port_field(self, value: str) -> tuple[bool, str]:
+        t = value.strip()
+        if not t:
+            return True, ""
+        if not t.isdigit():
+            return False, "Port must be numeric."
+        if not (1 <= int(t) <= 65535):
+            return False, "Port must be 1-65535."
+        return True, ""
+
+    # ── Interface population / telemetry / status (unchanged contract) ──────
 
     def populate_interfaces(self, interfaces: list[tuple[str, str]]) -> None:
         if not interfaces:
@@ -463,12 +673,47 @@ class CaptureView(Vertical):
         select = self.query_one("#capture-interface-select", Select)
         select.set_options(interfaces)
 
+    def prefill(self, protocol: str, port: str, ip: str, duration) -> None:
+        """Restore saved capture defaults into the filter row on startup.
+
+        Args:
+            protocol: A key from PROTOCOL_OPTIONS (e.g. "tcp"). Ignored
+                (left at its compose()-time default) if not recognised,
+                so a corrupted config can't leave the Select in a blank
+                state.
+            port: Saved port string, may be empty.
+            ip: Saved IP/host string, may be empty.
+            duration: Saved duration (int or str); coerced to str for the
+                Input widget.
+        """
+        try:
+            protocol_select = self.query_one("#capture-protocol-select", Select)
+            valid_keys = {value for _, value in self.PROTOCOL_OPTIONS}
+            if protocol in valid_keys:
+                protocol_select.value = protocol
+
+            self.query_one("#capture-port-input", Input).value = port or ""
+            self.query_one("#capture-ip-input", Input).value = ip or ""
+            self.query_one("#capture-duration-input", Input).value = str(duration)
+        except NoMatches:
+            return
+        self._update_filter_preview()
+
     def write_output(self, text: str) -> None:
         try:
             log = self.query_one("#capture-telemetry-log", Log)
             log.write_line(text)
         except NoMatches:
             pass
+
+    def show_setup_error(self, message: str) -> None:
+        try:
+            self.query_one("#capture-setup-error", Static).update(message)
+        except NoMatches:
+            pass
+
+    def clear_setup_error(self) -> None:
+        self.show_setup_error("")
 
     def set_status(self, interface: str, packets: str, status: str, elapsed: str) -> None:
         try:
@@ -479,9 +724,26 @@ class CaptureView(Vertical):
         except NoMatches:
             pass
 
+    # ── Packet table: colored rows + detail-on-select ───────────────────────
+
+    PROTOCOL_COLORS = {
+        "TCP":  "#4fc3f7", "UDP":  "#81c784", "DNS": "#ffd54f",
+        "HTTP": "#aed581", "TLS":  "#ce93d8", "ICMP": "#ff8a65",
+        "ARP":  "#90a4ae",
+    }
+    DEFAULT_ROW_COLOR = "#c9d1e0"
+
+    def _color_for_protocol(self, proto: str) -> str:
+        return self.PROTOCOL_COLORS.get(proto.upper(), self.DEFAULT_ROW_COLOR)
+
     def reset_packet_table(self) -> None:
         try:
             self.query_one("#capture-packet-table", DataTable).clear()
+        except NoMatches:
+            pass
+        self._packet_details.clear()
+        try:
+            self.query_one("#capture-detail-text", Static).update("Select a packet to see details")
         except NoMatches:
             pass
 
@@ -489,7 +751,40 @@ class CaptureView(Vertical):
                        proto: str, length: str, info: str) -> None:
         try:
             tbl = self.query_one("#capture-packet-table", DataTable)
-            tbl.add_row(no, time_s, src, dst, proto, length, info[:60])
+        except NoMatches:
+            return
+
+        color = self._color_for_protocol(proto)
+        cell = lambda value: Text(str(value), style=color)  # noqa: E731
+
+        tbl.add_row(
+            cell(no), cell(time_s), cell(src), cell(dst),
+            cell(proto), cell(length), cell(info[:80]),
+            key=no,
+        )
+        self._packet_details[no] = {
+            "no": no, "time": time_s, "src": src, "dst": dst,
+            "proto": proto, "length": length, "info": info,
+        }
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id != "capture-packet-table":
+            return
+        row_key = event.row_key.value
+        detail = self._packet_details.get(row_key)
+        if detail is None:
+            return
+        text = (
+            f"Packet #{detail['no']}\n"
+            f"  Time      : {detail['time']}s\n"
+            f"  Source    : {detail['src']}\n"
+            f"  Destination: {detail['dst']}\n"
+            f"  Protocol  : {detail['proto']}\n"
+            f"  Length    : {detail['length']} bytes\n"
+            f"  Info      : {detail['info']}"
+        )
+        try:
+            self.query_one("#capture-detail-text", Static).update(text)
         except NoMatches:
             pass
 
@@ -776,6 +1071,18 @@ class ShadowPortApp(App):
                           "check plugins/__init__.py and Log/error.log for per-file import errors")
         except Exception as e:
             log_error("main", "", "Plugin load failed", e)
+
+        # Pre-fill the Capture page from saved defaults (v2.4)
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.prefill(
+                protocol=self.config_manager.get("capture_protocol", "any"),
+                port=self.config_manager.get("capture_port", ""),
+                ip=self.config_manager.get("capture_ip", ""),
+                duration=self.config_manager.get("capture_duration", 60),
+            )
+        except NoMatches:
+            pass
 
         # Show only dashboard
         self._show_page("dashboard")
@@ -1129,7 +1436,7 @@ class ShadowPortApp(App):
                 if not stripped:
                     continue
                 name = stripped.split()[0]
-                interfaces.append((name, stripped))
+                interfaces.append((stripped, name))
 
             self.app.call_from_thread(self._on_interfaces_loaded, interfaces)
 
@@ -1158,17 +1465,32 @@ class ShadowPortApp(App):
         try:
             cv = self.query_one("#page-capture", CaptureView)
             interface = str(self.query_one("#capture-interface-select", Select).value)
-            bpf_filter = self.query_one("#capture-filter-input", Input).value.strip()
+            port_raw = self.query_one("#capture-port-input", Input).value
+            ip_raw = self.query_one("#capture-ip-input", Input).value
             duration_raw = self.query_one("#capture-duration-input", Input).value.strip() or "0"
         except NoMatches:
             return
+
+        cv.clear_setup_error()
+
+        port_ok, port_err = cv.validate_port_field(port_raw)
+        if not port_ok:
+            cv.show_setup_error(port_err)
+            return
+
+        ip_ok, ip_err = cv.validate_ip_field(ip_raw)
+        if not ip_ok:
+            cv.show_setup_error(ip_err)
+            return
+
+        bpf_filter = cv.build_bpf_filter()
 
         try:
             duration = int(duration_raw)
             if duration < 0:
                 raise ValueError
         except ValueError:
-            self._toast("Duration must be a non-negative integer.", "error")
+            cv.show_setup_error("Duration must be a non-negative integer.")
             return
 
         try:
@@ -1177,14 +1499,15 @@ class ShadowPortApp(App):
                 on_event=self._on_capture_event,
             )
         except ValueError as e:
-            self._toast(f"Invalid interface: {e}", "error")
+            cv.show_setup_error(f"Invalid interface: {e}")
             return
 
         self._capture_engine = engine
         self._capture_start_ts = time.time()
 
         cv.reset_packet_table()
-        cv.write_output(f"[{datetime.now().strftime('%H:%M:%S')}] Starting capture on {interface}…")
+        cv.write_output(f"[{datetime.now().strftime('%H:%M:%S')}] Starting capture on {interface}" +
+                        (f" ({bpf_filter})" if bpf_filter else "") + "…")
         cv.set_status(interface, "0", "Running", "00:00")
 
         try:
@@ -1194,9 +1517,13 @@ class ShadowPortApp(App):
             self._capture_engine = None
             return
 
+        self._toggle_capture_buttons(True)
         threading.Thread(target=self._capture_tick, daemon=True).start()
         self.config_manager.set("capture_interface", interface)
         self.config_manager.set("capture_filter", bpf_filter)
+        self.config_manager.set("capture_protocol", str(self.query_one("#capture-protocol-select", Select).value))
+        self.config_manager.set("capture_port", port_raw.strip())
+        self.config_manager.set("capture_ip", ip_raw.strip())
         self.config_manager.set("capture_duration", duration)
         self.config_manager.save()
 
@@ -1277,6 +1604,82 @@ class ShadowPortApp(App):
         )
 
         self._capture_engine = None
+        self._toggle_capture_buttons(False)
+
+        if engine.status == "stopped" and engine.get_packet_count() > 0:
+            threading.Thread(
+                target=self._load_packet_rows, args=(engine.output_file,), daemon=True
+            ).start()
+
+    # ── Post-capture packet list (Wireshark-style grid) ─────────────────────
+
+    # Same field set/order as the columns CaptureView.on_mount() declares:
+    # No. / Time / Source / Dest / Protocol / Length / Info.
+    _TSHARK_FIELDS = (
+        "frame.number", "frame.time_relative", "ip.src", "ip.dst",
+        "_ws.col.Protocol", "frame.len", "_ws.col.Info",
+    )
+
+    def _load_packet_rows(self, capture_file: str) -> None:
+        """Parse a finished .pcapng via `tshark -r ... -T fields` and
+        stream the resulting rows into the packet table.
+
+        Runs entirely on a background thread — this can take a while for
+        a large capture — and pushes results back via call_from_thread,
+        same pattern as every other capture/scan worker in this file.
+        """
+        import shutil as shutil_mod
+        import subprocess as subprocess_mod
+
+        if shutil_mod.which("tshark") is None:
+            return  # already reported missing tshark when the capture started
+
+        cmd = ["tshark", "-r", capture_file, "-T", "fields"]
+        for field in self._TSHARK_FIELDS:
+            cmd += ["-e", field]
+        cmd += ["-E", "separator=\t"]
+
+        try:
+            result = subprocess_mod.run(
+                cmd, shell=False, capture_output=True, text=True, timeout=60,
+            )
+        except (FileNotFoundError, subprocess_mod.TimeoutExpired) as e:
+            self.app.call_from_thread(self._on_packet_rows_failed, str(e))
+            return
+
+        if result.returncode != 0:
+            self.app.call_from_thread(
+                self._on_packet_rows_failed, result.stderr.strip() or "tshark -r failed"
+            )
+            return
+
+        rows = []
+        n_fields = len(self._TSHARK_FIELDS)
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            fields = line.split("\t")
+            fields = (fields + [""] * n_fields)[:n_fields]
+            rows.append(tuple(fields))
+
+        self.app.call_from_thread(self._on_packet_rows_loaded, rows)
+
+    def _on_packet_rows_failed(self, message: str) -> None:
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+            cv.write_output(f"[ERROR] Could not load packet list: {message}")
+        except NoMatches:
+            pass
+        log_error("capture", "", f"packet list load failed: {message}")
+
+    def _on_packet_rows_loaded(self, rows: list[tuple]) -> None:
+        try:
+            cv = self.query_one("#page-capture", CaptureView)
+        except NoMatches:
+            return
+        for no, time_s, src, dst, proto, length, info in rows:
+            cv.add_packet_row(no, time_s, src or "—", dst or "—", proto or "—", length, info)
+        cv.write_output(f"[INFO] Loaded {len(rows)} packet(s) into the table.")
 
     def _get_last_scan_id(self) -> Optional[int]:
         history = get_scan_history(1)
@@ -1319,6 +1722,13 @@ class ShadowPortApp(App):
         try:
             self.query_one("#scan-btn").styles.display  = "none"  if scanning else "block"
             self.query_one("#stop-btn").styles.display  = "block" if scanning else "none"
+        except NoMatches:
+            pass
+
+    def _toggle_capture_buttons(self, capturing: bool) -> None:
+        try:
+            self.query_one("#capture-start-btn").styles.display = "none"  if capturing else "block"
+            self.query_one("#capture-stop-btn").styles.display  = "block" if capturing else "none"
         except NoMatches:
             pass
 
