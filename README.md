@@ -91,13 +91,6 @@ shadowport-v2.4.0/
 ├── reports/                         # Auto-created
 └── requirements.txt
 ```
----
-
-<p align="center">
-  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011228.png" width="32%">
-  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011257.png" width="32%">
-  <img src="https://github.com/not-protocol/shadowport-scanner/blob/main/assets/Screenshot_20260626_011320.png" width="32%">
-</p>
 
 ---
 
@@ -219,15 +212,51 @@ ShadowPort can capture packets without running as root or using `sudo`.
 
 ### Usage
 
+The Capture page has a Wireshark-style layout: a structured filter row,
+a colored packet-list grid, a detail pane for the selected packet, and a
+live telemetry log.
+
 1. From the sidebar, select **Capture** (between Plugins and Reports).
-2. Choose an interface, optionally set a BPF filter (e.g. `tcp port 443`)
-   and a duration in seconds (`0` = capture until you press Stop).
-3. Press **Start**. Live packet count and elapsed time update in the status
-   bar; telemetry streams into the log panel below.
-4. Press **Stop** to end the capture. The result is saved to the database
-   automatically.
-5. Captures are written under `Log/captures/`, rotated via a ring buffer
+2. **Filter row** — instead of typing raw BPF syntax, pick from dedicated
+   fields and the app builds the filter for you:
+   - **Interface** — `eth0`, `wlan0`, `lo`, etc. (auto-populated from
+     `tshark -D`)
+   - **Protocol** — Any / TCP / UDP / DNS / HTTP / HTTPS / ICMP
+   - **Port** — optional, numeric (e.g. `443`)
+   - **IP / host** — optional, restricts capture to one address
+   - A live preview line under the row shows the exact BPF filter that
+     will be used (e.g. `tcp port 443 and host 10.0.0.5`)
+3. Set a **Duration** in seconds, or leave it `0` to capture until you
+   press Stop.
+4. Press **Start**. Live packet count and elapsed time update in the
+   status bar; telemetry streams into the log panel below.
+5. Press **Stop** to end the capture. The result is saved to the database,
+   and the packet list grid populates automatically — each row is
+   color-coded by protocol (TCP, UDP, DNS, HTTP, ICMP, etc.), matching
+   Wireshark's own coloring convention.
+6. **Click any row** to see its full detail (time, source, destination,
+   protocol, length, info) in the detail pane below the grid.
+7. Captures are written under `Log/captures/`, rotated via a ring buffer
    (50MB per file, 5 files max) so an unbounded capture can't fill your disk.
+
+Your last-used protocol, port, IP, and duration are remembered across
+restarts (stored in `~/.shadowport/config.json`, same as the active theme).
+
+If you need a capture filter this structured UI doesn't cover, open the
+saved `.pcapng` file directly in the real Wireshark GUI (see below) for
+the full filter language and deep packet inspection.
+
+### Opening a capture in real Wireshark
+
+ShadowPort's own packet grid is a quick summary view, not a full protocol
+dissector. For byte-level inspection, open the saved file in Wireshark:
+
+```bash
+wireshark Log/captures/capture_eth0_20260626_120000.pcapng
+```
+
+(Requires the separate `wireshark` GUI package — `tshark` alone only
+provides the CLI engine.)
 
 ### Security notes specific to capture
 
